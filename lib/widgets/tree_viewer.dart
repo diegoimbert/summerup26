@@ -81,23 +81,52 @@ class TreeViewer extends StatefulWidget {
   State<TreeViewer> createState() => _TreeViewerState();
 }
 
-/// What is known about one folder's contents.
+/// What is known about one folder's contents, and how much of it is on screen.
 class _Branch {
-  bool expanded = false;
+  /// What the user asked for. The reveal below may still be catching up.
+  bool open = false;
+
   bool loading = false;
   String? error;
   List<TreeEntry>? children;
+
+  /// 0 when the folder is closed, 1 when its contents are fully out. Null for
+  /// the top level, which is never revealed because it is never hidden.
+  AnimationController? reveal;
+
+  /// [reveal], eased. This is what the rows are scaled by.
+  CurvedAnimation? eased;
+
+  /// Whether this folder's rows belong on screen at all: while collapsing they
+  /// are still there, just shrinking.
+  bool get isShowing => open || (reveal?.value ?? 0) > 0;
+
+  void dispose() {
+    eased?.dispose();
+    reveal?.dispose();
+  }
 }
 
-class _TreeViewerState extends State<TreeViewer> {
+class _TreeViewerState extends State<TreeViewer> with TickerProviderStateMixin {
   /// Keyed by entry id; the null key is the top level.
   final Map<String?, _Branch> _branches = {};
+
+  /// Long enough to read as a movement, short enough not to be waited on.
+  static const Duration _revealDuration = Duration(milliseconds: 180);
 
   @override
   void initState() {
     super.initState();
-    _branches[null] = _Branch()..expanded = true;
+    _branches[null] = _Branch()..open = true;
     _load(null);
+  }
+
+  @override
+  void dispose() {
+    for (final branch in _branches.values) {
+      branch.dispose();
+    }
+    super.dispose();
   }
 
   Future<void> _load(TreeEntry? parent) async {
@@ -123,61 +152,121 @@ class _TreeViewerState extends State<TreeViewer> {
         branch.loading = false;
       });
     }
+
+    // The contents animate out once there are contents: a folder still being
+    // read says so on its own row, rather than growing to hold a spinner and
+    // then jumping to fit what arrives.
+    if (parent != null && branch.open) _reveal(branch, open: true);
+  }
+
+  /// Grows or shrinks a folder's contents.
+  void _reveal(_Branch branch, {required bool open}) {
+    final controller = branch.reveal ??= AnimationController(
+      vsync: this,
+      duration: _revealDuration,
+    );
+    branch.eased ??= CurvedAnimation(
+      parent: controller,
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.easeInCubic,
+    );
+
+    // Someone who has turned animations off is asking not to be kept waiting.
+    if (MediaQuery.maybeOf(context)?.disableAnimations ?? false) {
+      setState(() => controller.value = open ? 1 : 0);
+      return;
+    }
+
+    if (open) {
+      controller.forward();
+    } else {
+      // Rows leave the list only once they have finished shrinking.
+      controller.reverse().whenCompleteOrCancel(() {
+        if (mounted) setState(() {});
+      });
+    }
   }
 
   void _toggle(TreeEntry entry) {
     final branch = _branches[entry.id];
 
-    // First open: nothing has been fetched for this folder yet.
+    // First open: nothing has been fetched for this folder yet, so the reveal
+    // waits for [_load] to come back with something to reveal.
     if (branch == null) {
-      _branches[entry.id] = _Branch()..expanded = true;
+      _branches[entry.id] = _Branch()..open = true;
       _load(entry);
       return;
     }
 
     // An open folder that failed to list retries rather than collapsing, so a
     // transient error is one click from being cleared.
-    if (branch.expanded && branch.error != null) {
+    if (branch.open && branch.error != null) {
       _load(entry);
       return;
     }
 
-    setState(() => branch.expanded = !branch.expanded);
+    setState(() => branch.open = !branch.open);
+    if (branch.children == null && branch.open) {
+      // Opened again before its first read ever finished.
+      if (!branch.loading) _load(entry);
+      return;
+    }
+    _reveal(branch, open: branch.open);
   }
 
   /// Flattens the opened parts of the tree into the rows to draw.
+  ///
+  /// A row carries the reveals of every folder it sits inside, because a
+  /// subtree opening inside another that is itself still opening is scaled by
+  /// both.
   List<_Row> _rows() {
     final rows = <_Row>[];
 
-    void walk(TreeEntry? parent, int depth) {
+    void walk(TreeEntry? parent, int depth, List<Animation<double>> reveals) {
       final branch = _branches[parent?.id];
       if (branch == null) return;
 
-      if (branch.loading) {
-        rows.add(_NoteRow(depth: depth, text: 'Loading…', spinner: true));
-        return;
-      }
       final error = branch.error;
       if (error != null) {
-        rows.add(_NoteRow(depth: depth, text: error, isError: true));
+        rows.add(
+          _NoteRow(depth: depth, reveals: reveals, text: error, isError: true),
+        );
         return;
       }
 
-      final children = branch.children ?? const <TreeEntry>[];
+      final children = branch.children;
+      // Still being read: the folder's own row carries the spinner.
+      if (children == null) return;
+
       if (children.isEmpty) {
-        rows.add(_NoteRow(depth: depth, text: widget.emptyMessage));
+        rows.add(
+          _NoteRow(depth: depth, reveals: reveals, text: widget.emptyMessage),
+        );
         return;
       }
 
       for (final entry in children) {
         final child = _branches[entry.id];
-        final expanded = entry.isFolder && (child?.expanded ?? false);
-        rows.add(_EntryRow(depth: depth, entry: entry, expanded: expanded));
-        if (expanded) walk(entry, depth + 1);
+        final showing = entry.isFolder && (child?.isShowing ?? false);
+
+        rows.add(
+          _EntryRow(
+            depth: depth,
+            reveals: reveals,
+            entry: entry,
+            open: child?.open ?? false,
+            loading: child?.loading ?? false,
+          ),
+        );
+
+        if (showing) {
+          final reveal = child!.eased;
+          walk(entry, depth + 1, [...reveals, ?reveal]);
+        }
       }
     }
 
-    walk(null, 0);
+    walk(null, 0, const []);
     return rows;
   }
 
@@ -212,47 +301,101 @@ class _TreeViewerState extends State<TreeViewer> {
       itemCount: rows.length,
       itemBuilder: (context, index) {
         final row = rows[index];
-        return switch (row) {
-          _EntryRow() => _TreeTile(
-            entry: row.entry,
-            depth: row.depth,
-            expanded: row.expanded,
-            onTap: row.entry.isFolder ? () => _toggle(row.entry) : null,
+        return _Revealed(
+          reveals: row.reveals,
+          child: switch (row) {
+            _EntryRow() => _TreeTile(
+              entry: row.entry,
+              depth: row.depth,
+              expanded: row.open,
+              loading: row.loading,
+              onTap: row.entry.isFolder ? () => _toggle(row.entry) : null,
+            ),
+            _NoteRow() => _NoteTile(row: row),
+          },
+        );
+      },
+    );
+  }
+}
+
+/// A row being grown into place, or shrunk out of it.
+///
+/// Scaling each row rather than wrapping the subtree keeps the list lazy: the
+/// folder still appears to grow as one, because every row inside it moves
+/// together.
+class _Revealed extends StatelessWidget {
+  const _Revealed({required this.reveals, required this.child});
+
+  /// The reveals of every folder this row sits inside, outermost first.
+  final List<Animation<double>> reveals;
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    if (reveals.isEmpty) return child;
+
+    return AnimatedBuilder(
+      animation: Listenable.merge(reveals),
+      child: child,
+      builder: (context, child) {
+        var factor = 1.0;
+        for (final reveal in reveals) {
+          factor *= reveal.value;
+        }
+        if (factor >= 1) return child!;
+
+        return ClipRect(
+          child: Align(
+            alignment: Alignment.topLeft,
+            heightFactor: factor.clamp(0.0, 1.0),
+            // Fading as it goes keeps a half-height row from reading as a
+            // clipped one.
+            child: Opacity(opacity: factor.clamp(0.0, 1.0), child: child),
           ),
-          _NoteRow() => _NoteTile(row: row),
-        };
+        );
       },
     );
   }
 }
 
 sealed class _Row {
-  const _Row({required this.depth});
+  const _Row({required this.depth, required this.reveals});
 
   final int depth;
+
+  /// The reveals of the folders this row sits inside; empty at the top level.
+  final List<Animation<double>> reveals;
 }
 
 class _EntryRow extends _Row {
   const _EntryRow({
     required super.depth,
+    required super.reveals,
     required this.entry,
-    required this.expanded,
+    required this.open,
+    required this.loading,
   });
 
   final TreeEntry entry;
-  final bool expanded;
+
+  /// Whether this row's own folder is open.
+  final bool open;
+
+  /// Whether its contents are still being read.
+  final bool loading;
 }
 
 class _NoteRow extends _Row {
   const _NoteRow({
     required super.depth,
+    required super.reveals,
     required this.text,
-    this.spinner = false,
     this.isError = false,
   });
 
   final String text;
-  final bool spinner;
   final bool isError;
 }
 
@@ -268,12 +411,18 @@ class _TreeTile extends StatefulWidget {
     required this.entry,
     required this.depth,
     required this.expanded,
+    required this.loading,
     required this.onTap,
   });
 
   final TreeEntry entry;
   final int depth;
   final bool expanded;
+
+  /// Whether this folder's contents are on their way. Said here rather than on
+  /// a row of its own, so what arrives can grow into place.
+  final bool loading;
+
   final VoidCallback? onTap;
 
   @override
@@ -309,15 +458,24 @@ class _TreeTileState extends State<_TreeTile> {
             children: [
               SizedBox(
                 width: 17,
-                child: entry.isFolder
-                    ? Icon(
-                        widget.expanded
-                            ? Icons.keyboard_arrow_down
-                            : Icons.keyboard_arrow_right,
-                        size: 16,
-                        color: KandooColors.textMuted,
-                      )
-                    : null,
+                child: switch ((entry.isFolder, widget.loading)) {
+                  (true, true) => const Padding(
+                    padding: EdgeInsets.only(right: 4),
+                    child: SizedBox(
+                      width: 11,
+                      height: 11,
+                      child: CircularProgressIndicator(strokeWidth: 1.5),
+                    ),
+                  ),
+                  (true, false) => Icon(
+                    widget.expanded
+                        ? Icons.keyboard_arrow_down
+                        : Icons.keyboard_arrow_right,
+                    size: 16,
+                    color: KandooColors.textMuted,
+                  ),
+                  _ => null,
+                },
               ),
               Icon(
                 icon,
@@ -381,14 +539,7 @@ class _NoteTile extends StatelessWidget {
       alignment: Alignment.centerLeft,
       child: Row(
         children: [
-          if (row.spinner) ...[
-            const SizedBox(
-              width: 12,
-              height: 12,
-              child: CircularProgressIndicator(strokeWidth: 1.6),
-            ),
-            const SizedBox(width: 9),
-          ] else if (row.isError) ...[
+          if (row.isError) ...[
             const Icon(
               Icons.error_outline,
               size: 14,

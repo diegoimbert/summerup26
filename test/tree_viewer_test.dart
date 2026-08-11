@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -24,8 +25,17 @@ class _FakeTree {
   /// Ids that should fail the next time they are asked for.
   final Set<String?> failOnce = {};
 
+  /// Ids whose load is left hanging until [release] is called.
+  final Map<String?, Completer<void>> _held = {};
+
+  void hold(String id) => _held[id] = Completer<void>();
+
+  void release(String id) => _held.remove(id)?.complete();
+
   Future<List<TreeEntry>> load(TreeEntry? parent) async {
     calls.add(parent?.id);
+    final held = _held[parent?.id];
+    if (held != null) await held.future;
     if (failOnce.remove(parent?.id)) {
       throw const TreeLoadException(
         'Kandoo is not allowed to read this folder.',
@@ -132,6 +142,69 @@ void main() {
 
     expect(find.text('report.pdf'), findsOneWidget);
     expect(tree.calls, [null, '/docs', '/docs']);
+  });
+
+  testWidgets('a folder grows into place rather than appearing', (
+    tester,
+  ) async {
+    final tree = _sampleTree();
+    await _pumpTree(tester, tree.load);
+
+    // What sits below the folder is pushed down as the folder grows, so its
+    // position is the height of what has come out so far.
+    double below() => tester.getTopLeft(find.text('notes.md')).dy;
+
+    final closed = below();
+
+    await tester.tap(find.text('Docs'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+    final early = below();
+    expect(early, greaterThan(closed), reason: 'it should have started moving');
+
+    await tester.pump(const Duration(milliseconds: 60));
+    final middle = below();
+    expect(middle, greaterThan(early), reason: 'and kept moving');
+
+    await tester.pumpAndSettle();
+    expect(below(), greaterThan(middle));
+    // Two rows came out, so that is how far everything below moved.
+    expect(below() - closed, closeTo(72, 0.5));
+  });
+
+  testWidgets('a folder shrinks before its rows leave', (tester) async {
+    final tree = _sampleTree();
+    await _pumpTree(tester, tree.load);
+
+    await tester.tap(find.text('Docs'));
+    await tester.pumpAndSettle();
+    expect(find.text('report.pdf'), findsOneWidget);
+
+    await tester.tap(find.text('Docs'));
+    await tester.pump(const Duration(milliseconds: 40));
+    // Still there, on its way out.
+    expect(find.text('report.pdf'), findsOneWidget);
+
+    await tester.pumpAndSettle();
+    expect(find.text('report.pdf'), findsNothing);
+  });
+
+  testWidgets('a folder being read says so on its own row', (tester) async {
+    final tree = _sampleTree()..hold('/docs');
+    await _pumpTree(tester, tree.load);
+
+    await tester.tap(find.text('Docs'));
+    await tester.pump();
+
+    // The spinner sits on the folder, so what arrives can grow into place.
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(find.text('report.pdf'), findsNothing);
+
+    tree.release('/docs');
+    await tester.pumpAndSettle();
+
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.text('report.pdf'), findsOneWidget);
   });
 
   testWidgets('an empty folder is called out', (tester) async {

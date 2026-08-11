@@ -68,11 +68,11 @@ class _HomePageState extends State<HomePage> {
   }
 
   /// Everything the window needs before it is worth looking at: who is
-  /// connected, what was organized last time, and a fresh scan of the sources.
+  /// connected, and the library as it was left. Scanning only happens here when
+  /// there is no library yet; after that it is the user's call.
   Future<void> _start() async {
     await _connections.load();
-    await _library.load();
-    await _library.refresh();
+    await _library.start();
   }
 
   @override
@@ -244,7 +244,7 @@ class _NavTileState extends State<_NavTile> {
                     style: TextStyle(
                       color: selected ? KandooColors.textPrimary : foreground,
                       fontSize: 14,
-                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                      fontWeight: selected ? FontWeight.w500 : FontWeight.w400,
                     ),
                   ),
                 ),

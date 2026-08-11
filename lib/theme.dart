@@ -35,6 +35,12 @@ abstract final class KandooColors {
 }
 
 /// Type families, matching how getkandoo.app splits its `--k-font-*` roles.
+///
+/// Weight is a thing to spend, not a default. Regular carries body copy, labels
+/// and list rows; medium marks the one item in a group that is selected or
+/// otherwise standing out; semibold is for titles that head a page or a dialog,
+/// and for the wordmark. A screen where several things are heavy is a screen
+/// where nothing is.
 abstract final class KandooFonts {
   /// Headings and the wordmark.
   static const String heading = 'Instrument Sans';

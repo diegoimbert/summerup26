@@ -55,6 +55,17 @@ class SourceDescriptor {
   bool get isAvailable => support != SourceSupport.planned;
 }
 
+/// The source called [name], or null when the catalog has none.
+///
+/// Scans record the source as the user knows it, so this is what turns a stored
+/// name back into the mark that stands for it.
+SourceDescriptor? sourceNamed(String name) {
+  for (final source in kSourceCatalog) {
+    if (source.name == name) return source;
+  }
+  return null;
+}
+
 /// Every source offered on the Sources page.
 ///
 /// Ordered by how far each one is built: the file system first, since it works

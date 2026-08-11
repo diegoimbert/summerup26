@@ -92,12 +92,13 @@ void main() {
       _MemoryStore(connections: {'notion': _connected('notion')}),
     );
 
-    // Reachable without a sign-in, so it is always there.
-    expect(find.text('File System'), findsOneWidget);
-    expect(find.text('Notion'), findsOneWidget);
+    // Marks, not names: the tooltip is where each source is spelled out.
+    expect(find.byTooltip('File System'), findsOneWidget);
+    expect(find.byTooltip('Notion'), findsOneWidget);
+    expect(find.text('File System'), findsNothing);
     // Connectable but not signed in, and not built at all, respectively.
-    expect(find.text('Google Drive'), findsNothing);
-    expect(find.text('Dropbox'), findsNothing);
+    expect(find.byTooltip('Google Drive'), findsNothing);
+    expect(find.byTooltip('Dropbox'), findsNothing);
 
     // With nothing picked, the section shows the organized library — which
     // here has nothing in it and no folders to fill it from.
@@ -125,7 +126,7 @@ void main() {
       ),
     );
 
-    await tester.tap(find.text('File System'));
+    await tester.tap(find.byTooltip('File System'));
     await tester.pumpAndSettle();
     expect(find.byType(TreeViewer), findsOneWidget);
 
@@ -148,10 +149,10 @@ void main() {
       ),
     );
 
-    await tester.tap(find.text('File System'));
+    await tester.tap(find.byTooltip('File System'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Which File System folder?'), findsNothing);
+    expect(find.text('Which folder?'), findsNothing);
     expect(tree.roots, ['/Users/diegoimbert/Desktop']);
     expect(find.text('/Users/diegoimbert/Desktop'), findsOneWidget);
 
@@ -181,10 +182,10 @@ void main() {
       ),
     );
 
-    await tester.tap(find.text('File System'));
+    await tester.tap(find.byTooltip('File System'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Which File System folder?'), findsOneWidget);
+    expect(find.text('Which folder?'), findsOneWidget);
     expect(find.byType(TreeViewer), findsNothing);
     // Nothing is read until the user has said where to look.
     expect(tree.roots, isEmpty);
@@ -199,16 +200,16 @@ void main() {
     // And back again, since there was a choice to make.
     await tester.tap(find.text('Change folder'));
     await tester.pumpAndSettle();
-    expect(find.text('Which File System folder?'), findsOneWidget);
+    expect(find.text('Which folder?'), findsOneWidget);
   });
 
   testWidgets('no configured folders browses from the root', (tester) async {
     final tree = await _pumpFiles(tester, _MemoryStore());
 
-    await tester.tap(find.text('File System'));
+    await tester.tap(find.byTooltip('File System'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Which File System folder?'), findsNothing);
+    expect(find.text('Which folder?'), findsNothing);
     expect(tree.roots, ['/']);
     expect(find.byType(TreeViewer), findsOneWidget);
   });
@@ -219,7 +220,7 @@ void main() {
       _MemoryStore(connections: {'notion': _connected('notion')}),
     );
 
-    await tester.tap(find.text('Notion'));
+    await tester.tap(find.byTooltip('Notion'));
     await tester.pumpAndSettle();
 
     expect(find.text('Browsing Notion is not built yet'), findsOneWidget);

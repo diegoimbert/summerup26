@@ -441,11 +441,11 @@ void main() {
       final top = await tree.childrenOf(null);
       expect(top.map((row) => row.label), ['Career', 'Self']);
       expect(top.every((row) => row.isFolder), isTrue);
-      expect(top.last.detail, '3 files · File System');
+      expect(top.last.detail, '3 files');
 
       final self = await tree.childrenOf(top.last);
       expect(self.map((row) => row.label), ['Finance', 'Health']);
-      expect(self.first.detail, '2 files · File System');
+      expect(self.first.detail, '2 files');
 
       final finance = await tree.childrenOf(self.first);
       // Newest first, the way a person looks for recent work.
@@ -454,7 +454,7 @@ void main() {
         'Q2 budget.xlsx',
       ]);
       expect(finance.first.isFolder, isFalse);
-      expect(finance.first.detail, '2026-08-04 · File System');
+      expect(finance.first.detail, '2026-08-04');
     });
 
     test(
@@ -579,6 +579,59 @@ void main() {
       // Unless the user asks for a fresh arrangement.
       await second.refresh(force: true);
       expect(organizer.calls, 2);
+    });
+
+    test('launching with a stored library reads no folders at all', () async {
+      final connections = await connectionsWith(['/Users/diegoimbert/Desktop']);
+      final organizer = _FakeOrganizer();
+
+      final first = LibraryController(
+        connections: connections,
+        store: store,
+        scanner: _FakeScanner([_file('/a.pdf')]),
+        organizer: organizer,
+      );
+      addTearDown(first.dispose);
+      await first.start();
+      expect(first.entries, hasLength(1));
+
+      // The next launch: what was stored is what shows, and the disk is left
+      // alone until the user asks.
+      final scanner = _FakeScanner([_file('/a.pdf'), _file('/b.pdf')]);
+      final relaunched = LibraryController(
+        connections: connections,
+        store: store,
+        scanner: scanner,
+        organizer: organizer,
+      );
+      addTearDown(relaunched.dispose);
+      await relaunched.start();
+
+      expect(scanner.calls, isEmpty);
+      expect(organizer.calls, 1);
+      expect(relaunched.stage, LibraryStage.ready);
+      expect(relaunched.entries, hasLength(1));
+
+      // Rescan is what picks the new file up.
+      await relaunched.refresh();
+      expect(scanner.calls, hasLength(1));
+      expect(relaunched.entries, hasLength(2));
+    });
+
+    test('launching without one scans', () async {
+      final scanner = _FakeScanner([_file('/a.pdf')]);
+      final library = LibraryController(
+        connections: await connectionsWith(['/Users/diegoimbert/Desktop']),
+        store: store,
+        scanner: scanner,
+        organizer: _FakeOrganizer(),
+      );
+      addTearDown(library.dispose);
+
+      await library.start();
+
+      expect(scanner.calls, hasLength(1));
+      expect(library.entries, hasLength(1));
     });
 
     test('a changed scan is organized again', () async {

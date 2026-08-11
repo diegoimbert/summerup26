@@ -1,3 +1,4 @@
+import '../widgets/source_logo.dart';
 import '../widgets/tree_viewer.dart';
 import 'library_store.dart';
 
@@ -51,7 +52,8 @@ class LibraryTree {
             id: id,
             label: id.split('/').last,
             isFolder: true,
-            detail: _folderDetail(held),
+            detail: held.length == 1 ? '1 file' : '${held.length} files',
+            trailing: SourceMarks(sourceNames: _sourcesOf(held)),
           ),
         );
       }
@@ -69,13 +71,15 @@ class LibraryTree {
         });
 
       for (final entry in files) {
+        final modified = entry.file.modified;
         rows.add(
           TreeEntry(
             // The original path is what makes a row unique: two folders can
             // hold files the model gave the same title.
             id: 'file:${entry.file.path}',
             label: entry.title,
-            detail: _fileDetail(entry),
+            detail: modified == null ? null : _isoDate(modified),
+            trailing: SourceMarks(sourceNames: [entry.file.sourceName]),
           ),
         );
       }
@@ -90,25 +94,10 @@ class LibraryTree {
   Future<List<TreeEntry>> childrenOf(TreeEntry? parent) async =>
       _children[parent?.id ?? ''] ?? const [];
 
-  static String _folderDetail(List<LibraryEntry> held) {
-    final count = held.length;
-    final sources = <String>{for (final entry in held) entry.file.sourceName};
-
-    final names = sources.toList()..sort();
-    final label = names.length > 3
-        ? '${names.take(3).join(' + ')} + ${names.length - 3} more'
-        : names.join(' + ');
-
-    return '${count == 1 ? '1 file' : '$count files'} · $label';
-  }
-
-  static String _fileDetail(LibraryEntry entry) {
-    final modified = entry.file.modified;
-    return [
-      ?(modified == null ? null : _isoDate(modified)),
-      entry.file.sourceName,
-    ].join(' · ');
-  }
+  /// The distinct sources feeding a folder, in a stable order.
+  static List<String> _sourcesOf(List<LibraryEntry> held) =>
+      <String>{for (final entry in held) entry.file.sourceName}.toList()
+        ..sort();
 
   static String _isoDate(DateTime value) {
     final month = value.month.toString().padLeft(2, '0');

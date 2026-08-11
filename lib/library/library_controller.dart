@@ -29,11 +29,15 @@ enum LibraryStage {
   failed,
 }
 
-/// Scans the connected sources on launch and keeps the organized library.
+/// Scans the connected sources and keeps the organized library.
 ///
-/// The scan is cheap and local, so it runs every time. The organize step costs
-/// a paid API call, so it runs only when the scan actually differs from the one
-/// behind the stored library.
+/// A library that was stored is the library that shows: [start] scans only when
+/// there is nothing to show, so relaunching is instant and never walks the disk
+/// behind the user's back. Picking the files up again is [refresh], which the
+/// Rescan button calls.
+///
+/// Within a scan, the organize step costs a paid API call, so it runs only when
+/// the files actually differ from the ones behind the stored library.
 class LibraryController extends ChangeNotifier {
   LibraryController({
     required this.connections,
@@ -92,6 +96,19 @@ class LibraryController extends ChangeNotifier {
   /// Whether anything can be scanned at all: a scannable source that has been
   /// pointed at some folders.
   bool get hasScannableFolders => _scanTargets().isNotEmpty;
+
+  /// What launch does: show the stored library, and go looking only if there
+  /// is none.
+  ///
+  /// A user who already has a library gets it at once, and decides for
+  /// themselves when to pick the files up again — a launch is not a reason to
+  /// walk their folders, nor to spend a request re-filing what is already
+  /// filed.
+  Future<void> start() async {
+    await load();
+    if (_entries.isNotEmpty) return;
+    await refresh();
+  }
 
   /// Reads the stored library, so a returning user sees their files before any
   /// scanning begins.

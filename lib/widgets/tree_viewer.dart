@@ -11,6 +11,7 @@ class TreeEntry {
     this.isFolder = false,
     this.icon,
     this.detail,
+    this.trailing,
   });
 
   /// Stable identity, and what the loader is handed to fetch children. A path
@@ -26,9 +27,13 @@ class TreeEntry {
   /// type of their own (a doc, a spreadsheet, …).
   final IconData? icon;
 
-  /// Metadata shown quietly at the end of the row: a count and the sources a
-  /// folder draws on, a date and origin for a file.
+  /// Metadata shown quietly at the end of the row: how much a folder holds, or
+  /// when a file last changed.
   final String? detail;
+
+  /// Drawn after [detail], for what a row is better off showing than saying —
+  /// the brand marks of the sources behind it, typically.
+  final Widget? trailing;
 }
 
 /// Thrown by a loader when a folder cannot be listed. The message is shown in
@@ -322,12 +327,9 @@ class _TreeTileState extends State<_TreeTile> {
                 child: Text(
                   entry.label,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
+                  style: const TextStyle(
                     fontSize: 13,
                     color: KandooColors.textPrimary,
-                    fontWeight: entry.isFolder
-                        ? FontWeight.w500
-                        : FontWeight.w400,
                   ),
                 ),
               ),
@@ -348,6 +350,10 @@ class _TreeTileState extends State<_TreeTile> {
                     ),
                   ),
                 ),
+              ],
+              if (entry.trailing != null) ...[
+                const SizedBox(width: 10),
+                entry.trailing!,
               ],
             ],
           ),

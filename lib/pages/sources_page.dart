@@ -215,7 +215,7 @@ class _SourceCardState extends State<_SourceCard> {
                         fontFamily: KandooFonts.heading,
                         color: KandooColors.textPrimary,
                         fontSize: 15,
-                        fontWeight: FontWeight.w600,
+                        fontWeight: FontWeight.w500,
                         letterSpacing: -0.2,
                       ),
                     ),
@@ -277,7 +277,7 @@ class _StatusPill extends StatelessWidget {
             fontFamily: KandooFonts.mono,
             color: KandooColors.accentDeep,
             fontSize: 10.5,
-            fontWeight: FontWeight.w500,
+            fontWeight: FontWeight.w400,
           ),
         ),
       );

@@ -142,7 +142,7 @@ class _SourceConnectDialog extends StatelessWidget {
                               : 'Continue with ${source.name}',
                           style: const TextStyle(
                             fontSize: 14,
-                            fontWeight: FontWeight.w600,
+                            fontWeight: FontWeight.w500,
                           ),
                         ),
                       ),
@@ -208,7 +208,7 @@ class _PermissionList extends StatelessWidget {
             'Kandoo will be able to',
             style: TextStyle(
               fontSize: 12,
-              fontWeight: FontWeight.w600,
+              fontWeight: FontWeight.w500,
               color: KandooColors.textPrimary,
             ),
           ),
@@ -339,7 +339,7 @@ class _FolderScope extends StatelessWidget {
             // which drops the theme's font family.
             child: const Text(
               'Configure folders',
-              style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+              style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w500),
             ),
           ),
         ],

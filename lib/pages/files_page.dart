@@ -257,7 +257,7 @@ class ScanStatusStrip extends StatelessWidget {
       case LibraryStage.organizing:
         final placed = library.organizedCount;
         return (
-          'Organizing ${library.scannedCount} files with DeepSeek'
+          'Organizing ${library.scannedCount} files'
               '${placed == 0 ? '…' : ' — $placed placed'}',
           false,
         );
@@ -429,12 +429,13 @@ class _IntegrationButtonState extends State<_IntegrationButton> {
       child: GestureDetector(
         onTap: widget.onTap,
         child: Tooltip(
-          message: widget.source.tagline,
-          waitDuration: const Duration(milliseconds: 600),
+          // The mark stands for the source; the tooltip is where its name
+          // lives, so the row of buttons stays a row of marks.
+          message: widget.source.name,
+          waitDuration: const Duration(milliseconds: 400),
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 120),
-            width: 96,
-            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+            padding: const EdgeInsets.all(10),
             decoration: BoxDecoration(
               color: selected
                   ? KandooColors.selectedFill
@@ -446,26 +447,7 @@ class _IntegrationButtonState extends State<_IntegrationButton> {
                     : (_hovered ? KandooColors.lineStrong : Colors.transparent),
               ),
             ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                SourceLogo(source: widget.source, size: 38),
-                const SizedBox(height: 9),
-                Text(
-                  widget.source.name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 11.5,
-                    fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                    color: selected
-                        ? KandooColors.textPrimary
-                        : KandooColors.textSecondary,
-                  ),
-                ),
-              ],
-            ),
+            child: SourceLogo(source: widget.source, size: 40),
           ),
         ),
       ),
@@ -491,15 +473,23 @@ class _FolderChoice extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.fromLTRB(32, 22, 32, 32),
       children: [
-        Text(
-          'Which ${source.name} folder?',
-          style: const TextStyle(
-            fontFamily: KandooFonts.heading,
-            fontSize: 15,
-            fontWeight: FontWeight.w600,
-            color: KandooColors.textPrimary,
-            letterSpacing: -0.2,
-          ),
+        Row(
+          children: [
+            // The mark says which source this is; the heading only has to ask
+            // the question.
+            SourceLogo(source: source, size: 24),
+            const SizedBox(width: 10),
+            const Text(
+              'Which folder?',
+              style: TextStyle(
+                fontFamily: KandooFonts.heading,
+                fontSize: 15,
+                fontWeight: FontWeight.w500,
+                color: KandooColors.textPrimary,
+                letterSpacing: -0.2,
+              ),
+            ),
+          ],
         ),
         const SizedBox(height: 14),
         for (final folder in folders)

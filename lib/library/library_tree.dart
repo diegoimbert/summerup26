@@ -74,9 +74,9 @@ class LibraryTree {
         final modified = entry.file.modified;
         rows.add(
           TreeEntry(
-            // The original path is what makes a row unique: two folders can
-            // hold files the model gave the same title.
-            id: 'file:${entry.file.path}',
+            // What the source calls the file is what makes a row unique: two
+            // folders can hold files the model gave the same title.
+            id: 'file:${entry.file.identity}',
             label: entry.title,
             detail: modified == null ? null : _isoDate(modified),
             trailing: SourceMarks(sourceNames: [entry.file.sourceName]),

@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import '../library/library_controller.dart';
 import '../sources/connections.dart';
 import '../sources/file_system_browser.dart';
+import '../sources/google_drive_api.dart';
+import '../sources/google_drive_browser.dart';
 import '../sources/source_catalog.dart';
 import '../theme.dart';
 import '../widgets/page_shell.dart';
@@ -11,17 +13,42 @@ import '../widgets/tree_viewer.dart';
 
 /// The sources whose contents Kandoo can actually list today. The rest are
 /// connected and scoped, but their APIs are not wired up yet.
-const Set<String> kBrowsableSources = {'file_system'};
+const Set<String> kBrowsableSources = {'file_system', 'google_drive'};
 
 /// Builds the loader that browses [source] from [root]. Called only for the
 /// sources in [kBrowsableSources].
 typedef SourceTreeLoader =
-    TreeChildrenLoader Function(SourceDescriptor source, String root);
+    TreeChildrenLoader Function(
+      SourceDescriptor source,
+      String root,
+      ConnectionsController connections,
+    );
 
-/// Everything browsable today lives on this Mac. Drive and the rest will pick
-/// their loader off [source] once their APIs are built.
-TreeChildrenLoader defaultTreeLoader(SourceDescriptor source, String root) =>
-    FileSystemBrowser(rootPath: root).children;
+/// Where a source's rows come from when it is browsed as it really is.
+TreeChildrenLoader defaultTreeLoader(
+  SourceDescriptor source,
+  String root,
+  ConnectionsController connections,
+) {
+  switch (source.id) {
+    case 'google_drive':
+      // Credentials are fetched per call rather than captured: an access token
+      // lasts an hour, and a tree can be left open for longer than that.
+      return (parent) async {
+        final credentials = await connections.freshCredentials(source.id);
+        if (credentials == null) {
+          throw const TreeLoadException('Google Drive is not connected.');
+        }
+        return GoogleDriveBrowser(
+          api: GoogleDriveApi(accessToken: credentials.accessToken),
+          rootPath: root,
+        ).children(parent);
+      };
+
+    default:
+      return FileSystemBrowser(rootPath: root).children;
+  }
+}
 
 /// The Files section.
 ///
@@ -174,7 +201,7 @@ class _FilesPageState extends State<FilesPage> {
             // Rooting the tree somewhere new starts it from scratch, rather
             // than inheriting the previous folder's expansions.
             key: ValueKey('${source.id}:$root'),
-            loadChildren: widget.treeLoader(source, root),
+            loadChildren: widget.treeLoader(source, root, widget.connections),
           ),
         ),
       ],
@@ -225,7 +252,7 @@ class ScanStatusStrip extends StatelessWidget {
               ),
             ),
           ),
-          if (!library.isBusy && library.hasScannableFolders)
+          if (!library.isBusy && library.canScan)
             TextButton(
               onPressed: () => library.refresh(force: true),
               style: TextButton.styleFrom(
@@ -267,9 +294,9 @@ class ScanStatusStrip extends StatelessWidget {
 
       case LibraryStage.idle:
       case LibraryStage.ready:
-        if (!library.hasScannableFolders) {
+        if (!library.canScan) {
           return (
-            'Nothing to scan yet — add folders to a source under Sources.',
+            'Nothing to scan yet — connect a source, or give one folders.',
             false,
           );
         }
@@ -278,9 +305,18 @@ class ScanStatusStrip extends StatelessWidget {
         }
         final count = library.entries.length;
         final when = library.organizedAt;
+        final warnings = library.warnings;
         return (
-          '$count files organized${library.truncated ? ' (scan stopped at its limit)' : ''}'
-              '${when == null ? '' : ' · ${_ago(when)}'}',
+          '$count files organized'
+              '${library.truncated ? ' (scan stopped at its limit)' : ''}'
+              '${when == null ? '' : ' · ${_ago(when)}'}'
+              // One folder that could not be found is worth naming; several
+              // are worth counting.
+              '${switch (warnings.length) {
+                0 => '',
+                1 => ' · ${warnings.single}',
+                _ => ' · ${warnings.length} folders could not be found',
+              }}',
           false,
         );
     }
@@ -326,12 +362,12 @@ class _LibraryView extends StatelessWidget {
       );
     }
 
-    if (!library.hasScannableFolders) {
+    if (!library.canScan) {
       return const EmptySection(
         icon: Icons.folder_off_outlined,
         message:
-            'No folders to scan yet.\n'
-            'Add some to File System under Sources.',
+            'Nothing to scan yet.\n'
+            'Connect a source under Sources, or give one folders.',
       );
     }
 

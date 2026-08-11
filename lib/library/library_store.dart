@@ -11,25 +11,36 @@ class ScannedFile {
     required this.path,
     required this.sourceName,
     this.modified,
+    this.externalId,
   });
 
-  /// Where the file actually lives: an absolute path for the file system, and
-  /// whatever identifies it on the source for everything else.
+  /// Where the file was found: an absolute path on disk, and the path it was
+  /// reached by on a source that has no addresses of its own.
   final String path;
 
-  /// The source it came from, as the user knows it — 'File System' today.
+  /// The source it came from, as the user knows it — 'File System',
+  /// 'Google Drive'.
   final String sourceName;
 
   /// Last modified, when the source reports one. Kept so the organized view
   /// can show dates without asking a model to invent them.
   final DateTime? modified;
 
+  /// The source's own handle on the file, for sources that have one. Drive
+  /// lets two files share a name in a folder, so the path alone does not
+  /// identify a file there — and nothing can be fetched later without this.
+  final String? externalId;
+
   String get name => path.split('/').last;
+
+  /// What tells this file apart from every other one scanned.
+  String get identity => externalId ?? path;
 
   Map<String, dynamic> toJson() => {
     'path': path,
     'source': sourceName,
     if (modified != null) 'modified': modified!.toIso8601String(),
+    if (externalId != null) 'id': externalId,
   };
 
   static ScannedFile fromJson(Map<String, dynamic> json) => ScannedFile(
@@ -38,6 +49,7 @@ class ScannedFile {
     modified: json['modified'] == null
         ? null
         : DateTime.tryParse(json['modified'] as String),
+    externalId: json['id'] as String?,
   );
 }
 

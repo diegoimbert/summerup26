@@ -153,7 +153,9 @@ class _Sidebar extends StatelessWidget {
               'Kandoo',
               style: TextStyle(
                 fontFamily: KandooFonts.heading,
-                color: KandooColors.textPrimary,
+                // The wordmark carries the brand colour, as it does on the
+                // site.
+                color: KandooColors.accent,
                 fontSize: 19,
                 fontWeight: FontWeight.w600,
                 letterSpacing: -0.3,
@@ -242,7 +244,9 @@ class _NavTileState extends State<_NavTile> {
                     widget.section.label,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      color: selected ? KandooColors.textPrimary : foreground,
+                      // The label takes the accent with the icon, so a selected
+                      // section reads as one thing rather than two.
+                      color: foreground,
                       fontSize: 14,
                       fontWeight: selected ? FontWeight.w500 : FontWeight.w400,
                     ),

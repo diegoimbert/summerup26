@@ -4,11 +4,15 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
 import '../sources/connections.dart';
+import '../sources/google_drive_api.dart';
+import '../sources/oauth.dart';
 import '../sources/source_catalog.dart';
+import 'drive_scanner.dart';
 import 'file_scanner.dart';
 import 'library_store.dart';
 import 'library_tree.dart';
 import 'organizer.dart';
+import 'source_scanner.dart';
 
 /// Where the library has got to. The Files section reads this to say what is
 /// happening, so every stage the user might be kept waiting by has a name.
@@ -29,6 +33,11 @@ enum LibraryStage {
   failed,
 }
 
+/// Builds the scanner for [source], or returns null when this build cannot
+/// read it after all — a connection that has gone, typically.
+typedef SourceScannerFactory =
+    Future<SourceScanner?> Function(SourceDescriptor source);
+
 /// Scans the connected sources and keeps the organized library.
 ///
 /// A library that was stored is the library that shows: [start] scans only when
@@ -42,20 +51,29 @@ class LibraryController extends ChangeNotifier {
   LibraryController({
     required this.connections,
     LibraryStore? store,
-    FileSystemScanner? scanner,
+    SourceScannerFactory? scanners,
     DeepSeekOrganizer? organizer,
-  }) : _store = store ?? LibraryStore(),
-       _scanner = scanner ?? const FileSystemScanner(),
-       _organizer = organizer ?? DeepSeekOrganizer();
+  }) : _store = store ?? const LibraryStore(),
+       _organizer = organizer ?? DeepSeekOrganizer() {
+    _scannerFor = scanners ?? _defaultScannerFor;
+  }
 
   final ConnectionsController connections;
   final LibraryStore _store;
-  final FileSystemScanner _scanner;
   final DeepSeekOrganizer _organizer;
+  late final SourceScannerFactory _scannerFor;
 
-  /// The sources this can scan today. The others are connected and scoped, but
-  /// nothing reads them yet.
-  static const Set<String> scannableSources = {'file_system'};
+  /// The sources this can read, and whether each waits to be pointed at
+  /// folders first.
+  ///
+  /// The file system is the whole disk, so it scans nothing until the user says
+  /// where to look. A drive is the user's own and bounded by what they put in
+  /// it, so an unset scope means all of it — which is what an unset scope means
+  /// everywhere else in Kandoo.
+  static const Map<String, bool> scannableSources = {
+    'file_system': true,
+    'google_drive': false,
+  };
 
   LibraryStage _stage = LibraryStage.idle;
   LibraryStage get stage => _stage;
@@ -82,6 +100,11 @@ class LibraryController extends ChangeNotifier {
   bool _truncated = false;
   bool get truncated => _truncated;
 
+  /// Anything the last scan got past but the user should know about, such as a
+  /// configured folder that no longer exists.
+  List<String> _warnings = const [];
+  List<String> get warnings => _warnings;
+
   List<LibraryEntry> _entries = const [];
   List<LibraryEntry> get entries => _entries;
 
@@ -93,9 +116,9 @@ class LibraryController extends ChangeNotifier {
 
   String _fingerprint = '';
 
-  /// Whether anything can be scanned at all: a scannable source that has been
-  /// pointed at some folders.
-  bool get hasScannableFolders => _scanTargets().isNotEmpty;
+  /// Whether there is any source to read: one that is connected, and pointed
+  /// at folders if it is the kind that waits to be.
+  bool get canScan => _scanTargets().isNotEmpty;
 
   /// What launch does: show the stored library, and go looking only if there
   /// is none.
@@ -191,6 +214,12 @@ class LibraryController extends ChangeNotifier {
       // The scan still stands, and so does any library from before it.
       _error = failure.message;
       _stage = LibraryStage.failed;
+    } on ScanException catch (failure) {
+      _error = failure.message;
+      _stage = LibraryStage.failed;
+    } on OAuthException catch (failure) {
+      _error = failure.message;
+      _stage = LibraryStage.failed;
     } catch (failure) {
       _error = 'Scanning failed: $failure';
       _stage = LibraryStage.failed;
@@ -200,14 +229,37 @@ class LibraryController extends ChangeNotifier {
     }
   }
 
+  /// The scanner each source is read with. Only the file system needs nothing
+  /// from anywhere; a drive needs a token that has not lapsed.
+  Future<SourceScanner?> _defaultScannerFor(SourceDescriptor source) async {
+    switch (source.id) {
+      case 'file_system':
+        return const FileSystemScanner();
+
+      case 'google_drive':
+        final credentials = await connections.freshCredentials(source.id);
+        if (credentials == null) return null;
+        return GoogleDriveScanner(
+          api: GoogleDriveApi(accessToken: credentials.accessToken),
+        );
+
+      default:
+        return null;
+    }
+  }
+
   Future<List<ScannedFile>> _scan() async {
     final files = <ScannedFile>[];
+    _warnings = const [];
 
     for (final target in _scanTargets()) {
       _currentSource = target.source.name;
       notifyListeners();
 
-      final found = await _scanner.scan(
+      final scanner = await _scannerFor(target.source);
+      if (scanner == null) continue;
+
+      final found = await scanner.scan(
         roots: target.folders,
         sourceName: target.source.name,
         onProgress: (count) {
@@ -218,6 +270,9 @@ class LibraryController extends ChangeNotifier {
 
       files.addAll(found.files);
       _truncated = _truncated || found.truncated;
+      if (found.warnings.isNotEmpty) {
+        _warnings = [..._warnings, ...found.warnings];
+      }
       _scannedCount = files.length;
       notifyListeners();
     }
@@ -226,18 +281,16 @@ class LibraryController extends ChangeNotifier {
   }
 
   /// The connected, scannable sources and the folders each was narrowed to.
-  ///
-  /// A source with no folders configured is skipped rather than read whole:
-  /// for the file system that would mean walking the entire disk.
   List<({SourceDescriptor source, List<String> folders})> _scanTargets() {
     final targets = <({SourceDescriptor source, List<String> folders})>[];
 
     for (final source in kSourceCatalog) {
-      if (!scannableSources.contains(source.id)) continue;
+      final needsFolders = scannableSources[source.id];
+      if (needsFolders == null) continue;
       if (source.needsSignIn && !connections.isConnected(source.id)) continue;
 
       final folders = connections.foldersFor(source.id);
-      if (folders.isEmpty) continue;
+      if (folders.isEmpty && needsFolders) continue;
       targets.add((source: source, folders: folders));
     }
 
@@ -256,7 +309,7 @@ class LibraryController extends ChangeNotifier {
   static String _fingerprintOf(List<ScannedFile> files) {
     final lines = [
       for (final file in files)
-        '${file.sourceName}|${file.path}|'
+        '${file.sourceName}|${file.identity}|'
             '${file.modified?.millisecondsSinceEpoch ?? 0}',
     ]..sort();
     return sha256.convert(utf8.encode(lines.join('\n'))).toString();

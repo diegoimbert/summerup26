@@ -36,7 +36,11 @@ SourceCredentials _connected(String sourceId) => SourceCredentials(
 class _FakeTree {
   final List<String> roots = [];
 
-  TreeChildrenLoader loaderFor(SourceDescriptor source, String root) {
+  TreeChildrenLoader loaderFor(
+    SourceDescriptor source,
+    String root,
+    ConnectionsController connections,
+  ) {
     return (parent) async {
       // Recorded on the read rather than on the build, so a rebuild of the
       // page does not look like a second visit to the folder.
@@ -104,12 +108,13 @@ void main() {
     // here has nothing in it and no folders to fill it from.
     expect(
       find.text(
-        'No folders to scan yet.\nAdd some to File System under Sources.',
+        'Nothing to scan yet.\n'
+        'Connect a source under Sources, or give one folders.',
       ),
       findsOneWidget,
     );
     expect(
-      find.text('Nothing to scan yet — add folders to a source under Sources.'),
+      find.text('Nothing to scan yet — connect a source, or give one folders.'),
       findsOneWidget,
     );
   });

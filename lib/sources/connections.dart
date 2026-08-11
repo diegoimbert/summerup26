@@ -129,6 +129,68 @@ class ConnectionsController extends ChangeNotifier {
     }
   }
 
+  /// Credentials that can be used right now, renewed first if they are about
+  /// to lapse.
+  ///
+  /// Returns null when the source was never connected. A provider that will not
+  /// renew throws, because the honest answer is that the user has to sign in
+  /// again — quietly handing back a dead token would surface as an unexplained
+  /// failure further down.
+  Future<SourceCredentials?> freshCredentials(String sourceId) async {
+    final current = _connections[sourceId];
+    if (current == null) return null;
+
+    final expiry = current.expiresAt;
+    // A minute's margin, so a token does not lapse midway through a long scan.
+    final lapsing =
+        expiry != null &&
+        expiry.isBefore(DateTime.now().add(const Duration(minutes: 1)));
+    if (!lapsing) return current;
+
+    final refreshToken = current.refreshToken;
+    final provider = kOAuthProviders[sourceId];
+    final client = BuiltInOAuthClients.forSource(sourceId);
+    if (refreshToken == null || provider == null || client == null) {
+      throw OAuthException(
+        'The connection to $sourceId has expired. Connect it again from '
+        'Sources.',
+      );
+    }
+
+    final token = await _flow.refresh(
+      provider: provider,
+      client: client,
+      refreshToken: refreshToken,
+    );
+
+    final accessToken = token['access_token'] as String?;
+    if (accessToken == null) {
+      throw OAuthException('The provider returned no access token.');
+    }
+
+    final expiresIn = token['expires_in'];
+    final renewed = SourceCredentials(
+      sourceId: current.sourceId,
+      accessToken: accessToken,
+      // Providers may or may not rotate the refresh token; keep the old one
+      // when they do not.
+      refreshToken: token['refresh_token'] as String? ?? refreshToken,
+      // Built rather than copied, so a reply without an expiry clears the old
+      // one instead of inheriting a time that has already passed.
+      expiresAt: expiresIn is num
+          ? DateTime.now().add(Duration(seconds: expiresIn.toInt()))
+          : null,
+      accountLabel: current.accountLabel,
+      scopes: current.scopes,
+      extra: current.extra,
+    );
+
+    await _store.save(renewed);
+    _connections = {..._connections, sourceId: renewed};
+    notifyListeners();
+    return renewed;
+  }
+
   Future<void> disconnect(String sourceId) async {
     await _store.delete(sourceId);
     _connections = {..._connections}..remove(sourceId);

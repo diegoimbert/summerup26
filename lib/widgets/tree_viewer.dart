@@ -256,6 +256,10 @@ class _NoteRow extends _Row {
   final bool isError;
 }
 
+/// Row height. Tall enough that a long list reads as a list rather than a
+/// block of text.
+const double _rowHeight = 36;
+
 /// Indentation of a row at [depth], leaving room for the chevron column.
 double _indentFor(int depth) => 10 + depth * 17;
 
@@ -298,7 +302,7 @@ class _TreeTileState extends State<_TreeTile> {
         onTap: widget.onTap,
         behavior: HitTestBehavior.opaque,
         child: Container(
-          height: 30,
+          height: _rowHeight,
           padding: EdgeInsets.only(left: _indentFor(widget.depth), right: 12),
           color: _hovered ? KandooColors.hoverFill : Colors.transparent,
           child: Row(
@@ -372,7 +376,7 @@ class _NoteTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 30,
+      height: _rowHeight,
       padding: EdgeInsets.only(left: _indentFor(row.depth) + 17, right: 12),
       alignment: Alignment.centerLeft,
       child: Row(

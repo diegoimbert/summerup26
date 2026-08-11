@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'library_store.dart';
+import 'source_scanner.dart';
 
 /// Walks the folders the File System source has been narrowed to and lists
 /// every file underneath them.
@@ -9,7 +10,7 @@ import 'library_store.dart';
 /// input the organizer works from. The limits below are what keep "everything"
 /// from meaning a whole disk: a scan that never ends is worse than one that
 /// stops early and says so.
-class FileSystemScanner {
+class FileSystemScanner extends SourceScanner {
   const FileSystemScanner({this.maxFiles = 2000, this.maxDepth = 8});
 
   /// Stops once this many files are found. [ScanResult.truncated] says whether
@@ -31,6 +32,7 @@ class FileSystemScanner {
     'Library',
   };
 
+  @override
   Future<ScanResult> scan({
     required List<String> roots,
     required String sourceName,
@@ -103,12 +105,4 @@ class FileSystemScanner {
     onProgress?.call(files.length);
     return ScanResult(files: files, truncated: truncated);
   }
-}
-
-/// What a scan found, and whether it had to stop early.
-class ScanResult {
-  const ScanResult({required this.files, this.truncated = false});
-
-  final List<ScannedFile> files;
-  final bool truncated;
 }

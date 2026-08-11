@@ -36,11 +36,15 @@ abstract final class KandooColors {
 
 /// Type families, matching how getkandoo.app splits its `--k-font-*` roles.
 ///
-/// Weight is a thing to spend, not a default. Regular carries body copy, labels
-/// and list rows; medium marks the one item in a group that is selected or
-/// otherwise standing out; semibold is for titles that head a page or a dialog,
-/// and for the wordmark. A screen where several things are heavy is a screen
-/// where nothing is.
+/// Weight is a thing to spend, not a default. Light carries body copy, labels
+/// and list rows; regular and medium mark the one item in a group that is
+/// selected or otherwise standing out; semibold is for titles that head a page
+/// or a dialog, and for the wordmark. A screen where several things are heavy
+/// is a screen where nothing is.
+///
+/// Nothing has to opt into light: [buildKandooTheme] shifts the whole text
+/// theme down a step, so a `TextStyle` that says nothing about weight comes out
+/// light, and only a style that asks for weight gets it.
 abstract final class KandooFonts {
   /// Headings and the wordmark.
   static const String heading = 'Instrument Sans';
@@ -62,12 +66,55 @@ ThemeData buildKandooTheme() {
         surface: KandooColors.background,
       );
 
-  return ThemeData(
+  final base = ThemeData(
     useMaterial3: true,
     colorScheme: scheme,
     scaffoldBackgroundColor: KandooColors.background,
     dividerColor: KandooColors.divider,
     // Inter carries everything by default; headings opt into Instrument Sans.
     fontFamily: KandooFonts.body,
+  );
+
+  // Material's text theme is built around regular. Shifting it down a step
+  // makes light the weight everything inherits, so only text that explicitly
+  // asks for weight carries any.
+  return base.copyWith(
+    textTheme: _aStepLighter(base.textTheme),
+    primaryTextTheme: _aStepLighter(base.primaryTextTheme),
+  );
+}
+
+/// Every style in [theme], one weight lighter.
+TextTheme _aStepLighter(TextTheme theme) {
+  TextStyle? lighter(TextStyle? style) {
+    if (style == null) return null;
+    // A style that never said what weight it wanted was going to be drawn
+    // regular, so a step down from there is what it gets.
+    final weight = style.fontWeight ?? FontWeight.w400;
+    return style.copyWith(
+      fontWeight:
+          FontWeight.values[(FontWeight.values.indexOf(weight) - 1).clamp(
+            0,
+            FontWeight.values.length - 1,
+          )],
+    );
+  }
+
+  return TextTheme(
+    displayLarge: lighter(theme.displayLarge),
+    displayMedium: lighter(theme.displayMedium),
+    displaySmall: lighter(theme.displaySmall),
+    headlineLarge: lighter(theme.headlineLarge),
+    headlineMedium: lighter(theme.headlineMedium),
+    headlineSmall: lighter(theme.headlineSmall),
+    titleLarge: lighter(theme.titleLarge),
+    titleMedium: lighter(theme.titleMedium),
+    titleSmall: lighter(theme.titleSmall),
+    bodyLarge: lighter(theme.bodyLarge),
+    bodyMedium: lighter(theme.bodyMedium),
+    bodySmall: lighter(theme.bodySmall),
+    labelLarge: lighter(theme.labelLarge),
+    labelMedium: lighter(theme.labelMedium),
+    labelSmall: lighter(theme.labelSmall),
   );
 }

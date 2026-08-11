@@ -87,6 +87,10 @@ flutter:
           weight: 600
     - family: Inter
       fonts:
+        # Light carries body copy and rows; see KandooFonts for when weight is
+        # spent on something.
+        - asset: assets/fonts/Inter-Light.ttf
+          weight: 300
         - asset: assets/fonts/Inter-Regular.ttf
           weight: 400
         - asset: assets/fonts/Inter-Medium.ttf

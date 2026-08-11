@@ -215,13 +215,38 @@ class OAuthFlow {
     required String code,
     required String redirectUri,
     required String verifier,
-  }) async {
-    final body = <String, String>{
+  }) => _token(
+    provider: provider,
+    client: client,
+    body: {
       'grant_type': 'authorization_code',
       'code': code,
       'redirect_uri': redirectUri,
       if (provider.usePkce) 'code_verifier': verifier,
-    };
+    },
+  );
+
+  /// Trades a refresh token for a fresh access token.
+  ///
+  /// Access tokens last about an hour, so anything that reads a source hours
+  /// after sign-in goes through here rather than sending the user back to a
+  /// consent page they have already been through.
+  Future<Map<String, dynamic>> refresh({
+    required OAuthProvider provider,
+    required OAuthClient client,
+    required String refreshToken,
+  }) => _token(
+    provider: provider,
+    client: client,
+    body: {'grant_type': 'refresh_token', 'refresh_token': refreshToken},
+  );
+
+  /// Posts to the token endpoint, authenticating however the provider expects.
+  Future<Map<String, dynamic>> _token({
+    required OAuthProvider provider,
+    required OAuthClient client,
+    required Map<String, String> body,
+  }) async {
     final headers = <String, String>{
       'Accept': 'application/json',
       'Content-Type': 'application/x-www-form-urlencoded',

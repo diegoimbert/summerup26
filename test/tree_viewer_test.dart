@@ -1,8 +1,13 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:overlay_app/sources/file_system_browser.dart';
+import 'package:overlay_app/sources/google_drive_api.dart';
+import 'package:overlay_app/sources/google_drive_browser.dart';
 import 'package:overlay_app/theme.dart';
 import 'package:overlay_app/widgets/tree_viewer.dart';
 
@@ -198,6 +203,143 @@ void main() {
             (error) => error.message,
             'message',
             'This folder no longer exists.',
+          ),
+        ),
+      );
+    });
+  });
+
+  group('GoogleDriveBrowser', () {
+    /// A drive held in memory: folder id to the rows Drive would return.
+    MockClient driveOf(Map<String, List<Map<String, dynamic>>> folders) {
+      return MockClient((request) async {
+        final query = request.url.queryParameters['q']!;
+        final parent = RegExp(r"'([^']+)' in parents").firstMatch(query)![1]!;
+        var rows = folders[parent] ?? const <Map<String, dynamic>>[];
+
+        final named = RegExp(r"name = '([^']+)'").firstMatch(query);
+        if (named != null) {
+          rows = rows
+              .where((row) => row['name'] == named[1])
+              .toList(growable: false);
+        }
+
+        return http.Response(jsonEncode({'files': rows}), 200);
+      });
+    }
+
+    Map<String, dynamic> folder(String id, String name) => {
+      'id': id,
+      'name': name,
+      'mimeType': GoogleDriveApi.folderMimeType,
+    };
+
+    Map<String, dynamic> doc(String id, String name) => {
+      'id': id,
+      'name': name,
+      'mimeType': 'application/pdf',
+    };
+
+    test('the drive itself lists folders first, then files', () async {
+      final browser = GoogleDriveBrowser(
+        api: GoogleDriveApi(
+          accessToken: 'token',
+          client: driveOf({
+            'root': [
+              doc('d1', 'zebra.pdf'),
+              folder('f1', 'Work'),
+              doc('d2', 'Apples.pdf'),
+              folder('f2', 'archive'),
+            ],
+          }),
+        ),
+      );
+
+      final entries = await browser.children(null);
+
+      expect(entries.map((entry) => entry.label), [
+        'archive',
+        'Work',
+        'Apples.pdf',
+        'zebra.pdf',
+      ]);
+      expect(entries.map((entry) => entry.isFolder), [
+        true,
+        true,
+        false,
+        false,
+      ]);
+      // Rows carry Drive ids, which is what opening one asks Drive about.
+      expect(entries.first.id, 'f2');
+    });
+
+    test('a folder is opened by its id', () async {
+      final browser = GoogleDriveBrowser(
+        api: GoogleDriveApi(
+          accessToken: 'token',
+          client: driveOf({
+            'root': [folder('f1', 'Work')],
+            'f1': [doc('d1', 'Deck.pdf')],
+          }),
+        ),
+      );
+
+      final work = (await browser.children(null)).single;
+      final inside = await browser.children(work);
+
+      expect(inside.single.label, 'Deck.pdf');
+    });
+
+    test('a configured folder becomes the top of the tree', () async {
+      final browser = GoogleDriveBrowser(
+        api: GoogleDriveApi(
+          accessToken: 'token',
+          client: driveOf({
+            'root': [folder('f1', 'Work')],
+            'f1': [folder('f2', 'Invoices')],
+            'f2': [doc('d1', 'March.pdf')],
+          }),
+        ),
+        rootPath: '/Work/Invoices',
+      );
+
+      final entries = await browser.children(null);
+      expect(entries.single.label, 'March.pdf');
+    });
+
+    test('a folder that is gone says so', () async {
+      final browser = GoogleDriveBrowser(
+        api: GoogleDriveApi(accessToken: 'token', client: driveOf(const {})),
+        rootPath: '/Nowhere',
+      );
+
+      expect(
+        () => browser.children(null),
+        throwsA(
+          isA<TreeLoadException>().having(
+            (error) => error.message,
+            'message',
+            'No Google Drive folder at /Nowhere.',
+          ),
+        ),
+      );
+    });
+
+    test('an expired connection reads as one', () async {
+      final browser = GoogleDriveBrowser(
+        api: GoogleDriveApi(
+          accessToken: 'stale',
+          client: MockClient((request) async => http.Response('nope', 401)),
+        ),
+      );
+
+      expect(
+        () => browser.children(null),
+        throwsA(
+          isA<TreeLoadException>().having(
+            (error) => error.message,
+            'message',
+            'Google Drive needs connecting again from Sources.',
           ),
         ),
       );

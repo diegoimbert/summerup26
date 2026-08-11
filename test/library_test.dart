@@ -4,13 +4,16 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:overlay_app/library/drive_scanner.dart';
 import 'package:overlay_app/library/file_scanner.dart';
 import 'package:overlay_app/library/library_controller.dart';
 import 'package:overlay_app/library/library_store.dart';
 import 'package:overlay_app/library/library_tree.dart';
 import 'package:overlay_app/library/organizer.dart';
+import 'package:overlay_app/library/source_scanner.dart';
 import 'package:overlay_app/sources/connections.dart';
 import 'package:overlay_app/sources/credential_store.dart';
+import 'package:overlay_app/sources/google_drive_api.dart';
 
 /// Keeps folder scope in memory, so the tests never touch Application Support.
 class _MemoryStore extends CredentialStore {
@@ -26,7 +29,7 @@ class _MemoryStore extends CredentialStore {
 }
 
 /// A scan with no disk behind it.
-class _FakeScanner extends FileSystemScanner {
+class _FakeScanner extends SourceScanner {
   _FakeScanner(this.files);
 
   final List<ScannedFile> files;
@@ -63,6 +66,10 @@ class _FakeOrganizer extends DeepSeekOrganizer {
     return [for (final file in files) 'Self/Finance/${file.name}'];
   }
 }
+
+/// Hands every source the same scanner, which is all a controller test needs.
+SourceScannerFactory _only(SourceScanner scanner) =>
+    (source) async => scanner;
 
 ScannedFile _file(String path, {DateTime? modified}) => ScannedFile(
   path: path,
@@ -148,6 +155,210 @@ void main() {
       );
 
       expect(result.files, hasLength(3));
+    });
+  });
+
+  group('GoogleDriveScanner', () {
+    /// A drive held in memory: folder id to the rows Drive would return.
+    MockClient driveOf(
+      Map<String, List<Map<String, dynamic>>> folders, {
+      List<Uri>? seen,
+    }) {
+      return MockClient((request) async {
+        seen?.add(request.url);
+        final query = request.url.queryParameters['q']!;
+        final parent = RegExp(r"'([^']+)' in parents").firstMatch(query)![1]!;
+        var rows = folders[parent] ?? const <Map<String, dynamic>>[];
+
+        // Resolving a folder by name asks for one named child.
+        final named = RegExp(r"name = '([^']+)'").firstMatch(query);
+        if (named != null) {
+          rows = rows
+              .where((row) => row['name'] == named[1])
+              .toList(growable: false);
+        }
+
+        return http.Response(jsonEncode({'files': rows}), 200);
+      });
+    }
+
+    Map<String, dynamic> folder(String id, String name) => {
+      'id': id,
+      'name': name,
+      'mimeType': GoogleDriveApi.folderMimeType,
+    };
+
+    Map<String, dynamic> doc(String id, String name, String modified) => {
+      'id': id,
+      'name': name,
+      'mimeType': 'application/pdf',
+      'modifiedTime': modified,
+    };
+
+    test('walks the whole drive when no folder was chosen', () async {
+      final scanner = GoogleDriveScanner(
+        api: GoogleDriveApi(
+          accessToken: 'token',
+          client: driveOf({
+            'root': [
+              folder('f1', 'Work'),
+              doc('d1', 'Passport.pdf', '2026-06-01T10:00:00.000Z'),
+            ],
+            'f1': [doc('d2', 'Pitch deck.pdf', '2026-05-11T09:00:00.000Z')],
+          }),
+        ),
+      );
+
+      final result = await scanner.scan(
+        roots: const [],
+        sourceName: 'Google Drive',
+      );
+
+      expect(result.files.map((file) => file.path), [
+        '/Passport.pdf',
+        '/Work/Pitch deck.pdf',
+      ]);
+      // Drive's id is what identifies the file, since names repeat.
+      expect(result.files.first.externalId, 'd1');
+      expect(result.files.first.sourceName, 'Google Drive');
+      expect(result.files.last.modified, DateTime.utc(2026, 5, 11, 9));
+      expect(result.warnings, isEmpty);
+    });
+
+    test('a chosen folder is resolved by name and scanned alone', () async {
+      final seen = <Uri>[];
+      final scanner = GoogleDriveScanner(
+        api: GoogleDriveApi(
+          accessToken: 'token',
+          client: driveOf({
+            'root': [folder('f1', 'Work'), folder('f2', 'Personal')],
+            'f1': [folder('f3', 'Invoices')],
+            'f3': [doc('d1', 'March.pdf', '2026-03-01T10:00:00.000Z')],
+            'f2': [
+              doc(
+                'd2',
+                'Nothing to do with it.pdf',
+                '2026-03-01T10:00:00.000Z',
+              ),
+            ],
+          }, seen: seen),
+        ),
+      );
+
+      final result = await scanner.scan(
+        roots: const ['/Work/Invoices'],
+        sourceName: 'Google Drive',
+      );
+
+      expect(result.files.map((file) => file.path), [
+        '/Work/Invoices/March.pdf',
+      ]);
+      // The other branch of the drive is never listed.
+      expect(
+        seen.map((url) => url.queryParameters['q']!).join(),
+        isNot(contains("'f2'")),
+      );
+    });
+
+    test('a folder that is gone is a warning, not a failure', () async {
+      final scanner = GoogleDriveScanner(
+        api: GoogleDriveApi(
+          accessToken: 'token',
+          client: driveOf({
+            'root': [folder('f1', 'Work')],
+            'f1': [doc('d1', 'Deck.pdf', '2026-03-01T10:00:00.000Z')],
+          }),
+        ),
+      );
+
+      final result = await scanner.scan(
+        roots: const ['/Work', '/Gone'],
+        sourceName: 'Google Drive',
+      );
+
+      expect(result.files, hasLength(1));
+      expect(result.warnings, ['No Google Drive folder at /Gone']);
+    });
+
+    test('a folder is read a page at a time', () async {
+      var calls = 0;
+      final scanner = GoogleDriveScanner(
+        api: GoogleDriveApi(
+          accessToken: 'token',
+          client: MockClient((request) async {
+            calls += 1;
+            final token = request.url.queryParameters['pageToken'];
+            return http.Response(
+              jsonEncode({
+                'files': [
+                  {
+                    'id': 'd$calls',
+                    'name': 'File $calls.pdf',
+                    'mimeType': 'application/pdf',
+                  },
+                ],
+                if (token == null) 'nextPageToken': 'page-2',
+              }),
+              200,
+            );
+          }),
+        ),
+      );
+
+      final result = await scanner.scan(
+        roots: const [],
+        sourceName: 'Google Drive',
+      );
+
+      expect(calls, 2);
+      expect(result.files.map((file) => file.name), [
+        'File 1.pdf',
+        'File 2.pdf',
+      ]);
+    });
+
+    test('an expired connection says to reconnect', () async {
+      final scanner = GoogleDriveScanner(
+        api: GoogleDriveApi(
+          accessToken: 'stale',
+          client: MockClient((request) async => http.Response('nope', 401)),
+        ),
+      );
+
+      await expectLater(
+        scanner.scan(roots: const [], sourceName: 'Google Drive'),
+        throwsA(
+          isA<ScanException>().having(
+            (error) => error.message,
+            'message',
+            'Google Drive needs connecting again from Sources.',
+          ),
+        ),
+      );
+    });
+
+    test('the scan stops at its ceiling', () async {
+      final scanner = GoogleDriveScanner(
+        api: GoogleDriveApi(
+          accessToken: 'token',
+          client: driveOf({
+            'root': [
+              doc('d1', 'One.pdf', '2026-03-01T10:00:00.000Z'),
+              doc('d2', 'Two.pdf', '2026-03-01T10:00:00.000Z'),
+              doc('d3', 'Three.pdf', '2026-03-01T10:00:00.000Z'),
+            ],
+          }),
+        ),
+        maxFiles: 2,
+      );
+
+      final result = await scanner.scan(
+        roots: const [],
+        sourceName: 'Google Drive',
+      );
+
+      expect(result.files, hasLength(2));
+      expect(result.truncated, isTrue);
     });
   });
 
@@ -514,7 +725,7 @@ void main() {
       final library = LibraryController(
         connections: await connectionsWith(['/Users/diegoimbert/Desktop']),
         store: store,
-        scanner: scanner,
+        scanners: _only(scanner),
         organizer: organizer,
       );
       addTearDown(library.dispose);
@@ -554,7 +765,7 @@ void main() {
       final first = LibraryController(
         connections: connections,
         store: store,
-        scanner: scanner,
+        scanners: _only(scanner),
         organizer: organizer,
       );
       addTearDown(first.dispose);
@@ -565,7 +776,7 @@ void main() {
       final second = LibraryController(
         connections: connections,
         store: store,
-        scanner: scanner,
+        scanners: _only(scanner),
         organizer: organizer,
       );
       addTearDown(second.dispose);
@@ -588,7 +799,7 @@ void main() {
       final first = LibraryController(
         connections: connections,
         store: store,
-        scanner: _FakeScanner([_file('/a.pdf')]),
+        scanners: _only(_FakeScanner([_file('/a.pdf')])),
         organizer: organizer,
       );
       addTearDown(first.dispose);
@@ -601,7 +812,7 @@ void main() {
       final relaunched = LibraryController(
         connections: connections,
         store: store,
-        scanner: scanner,
+        scanners: _only(scanner),
         organizer: organizer,
       );
       addTearDown(relaunched.dispose);
@@ -623,7 +834,7 @@ void main() {
       final library = LibraryController(
         connections: await connectionsWith(['/Users/diegoimbert/Desktop']),
         store: store,
-        scanner: scanner,
+        scanners: _only(scanner),
         organizer: _FakeOrganizer(),
       );
       addTearDown(library.dispose);
@@ -641,7 +852,7 @@ void main() {
       final library = LibraryController(
         connections: connections,
         store: store,
-        scanner: _FakeScanner([_file('/a.pdf')]),
+        scanners: _only(_FakeScanner([_file('/a.pdf')])),
         organizer: organizer,
       );
       addTearDown(library.dispose);
@@ -650,7 +861,7 @@ void main() {
       final withMore = LibraryController(
         connections: connections,
         store: store,
-        scanner: _FakeScanner([_file('/a.pdf'), _file('/b.pdf')]),
+        scanners: _only(_FakeScanner([_file('/a.pdf'), _file('/b.pdf')])),
         organizer: organizer,
       );
       addTearDown(withMore.dispose);
@@ -671,7 +882,7 @@ void main() {
         final first = LibraryController(
           connections: connections,
           store: store,
-          scanner: _FakeScanner([_file('/a.pdf')]),
+          scanners: _only(_FakeScanner([_file('/a.pdf')])),
           organizer: _FakeOrganizer(),
         );
         addTearDown(first.dispose);
@@ -680,7 +891,7 @@ void main() {
         final failing = LibraryController(
           connections: connections,
           store: store,
-          scanner: _FakeScanner([_file('/a.pdf'), _file('/b.pdf')]),
+          scanners: _only(_FakeScanner([_file('/a.pdf'), _file('/b.pdf')])),
           organizer: _FakeOrganizer(
             failure: 'DeepSeek is unavailable right now.',
           ),
@@ -704,12 +915,12 @@ void main() {
       final library = LibraryController(
         connections: await connectionsWith(const []),
         store: store,
-        scanner: scanner,
+        scanners: _only(scanner),
         organizer: organizer,
       );
       addTearDown(library.dispose);
 
-      expect(library.hasScannableFolders, isFalse);
+      expect(library.canScan, isFalse);
       await library.refresh();
 
       // Scanning a whole disk is not what an unset scope means here.

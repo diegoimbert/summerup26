@@ -1,8 +1,9 @@
 {
   "_comment": "Copy to oauth.json (gitignored) and build with: flutter build macos --dart-define-from-file=oauth.json",
 
-  "_google": "Google Cloud console > Credentials > OAuth client ID > type 'Desktop app'. Add http://127.0.0.1:53682 as an authorised redirect URI. No secret is needed: Google documents client_secret as not applicable to installed apps, and Kandoo uses PKCE.",
+  "_google": "Google Cloud console > Credentials > OAuth client ID > type 'Desktop app'. Desktop clients accept loopback on any port, so there is no redirect URI to register; a 'Web application' client instead needs http://127.0.0.1:53682 added explicitly. Both the id and the secret are required at the token endpoint: Google's 'client_secret not applicable' exemption covers only Android, iOS and Chrome clients. The secret is not confidential for installed apps and PKCE is what binds the exchange to this app.",
   "GOOGLE_DRIVE_CLIENT_ID": "xxxxxxxx.apps.googleusercontent.com",
+  "GOOGLE_DRIVE_CLIENT_SECRET": "GOCSPX-xxxxxxxxxxxxxxxx",
 
   "_notion": "Notion integrations > Public integration. Notion supports no PKCE and authenticates the token exchange with HTTP Basic client_id:client_secret, so the secret cannot ship inside the app. Point NOTION_TOKEN_PROXY at a small endpoint you host that holds the secret, accepts {code, redirect_uri} as JSON and returns Notion's token response verbatim.",
   "NOTION_CLIENT_ID": "00000000-0000-0000-0000-000000000000",

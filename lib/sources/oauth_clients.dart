@@ -10,9 +10,12 @@ import 'oauth.dart';
 ///
 /// What is safe to embed differs per provider:
 ///
-/// * Google documents the client secret as "not applicable" for installed
-///   apps, so the loopback + PKCE flow needs only a client id. Nothing
-///   confidential ships in the binary.
+/// * Google's Desktop app clients need both a client id and a client secret at
+///   the token endpoint; omitting the secret fails with "client_secret is
+///   missing". Its exemption ("not applicable") covers only Android, iOS and
+///   Chrome clients. Google does document the value as not confidential for
+///   installed apps, and PKCE is what actually protects the exchange, so
+///   shipping it in the binary is the intended arrangement here.
 /// * Notion supports no PKCE and authenticates the token exchange with HTTP
 ///   Basic `client_id:client_secret`, and its docs say the secret must never
 ///   live in source code. A shipped binary cannot keep it, so the supported
@@ -22,6 +25,13 @@ import 'oauth.dart';
 abstract final class BuiltInOAuthClients {
   static const String googleDriveClientId = String.fromEnvironment(
     'GOOGLE_DRIVE_CLIENT_ID',
+  );
+
+  /// Required by Google's Desktop app clients at the token endpoint. Not
+  /// confidential per Google's own docs for installed apps; PKCE is what binds
+  /// the exchange to this app.
+  static const String googleDriveClientSecret = String.fromEnvironment(
+    'GOOGLE_DRIVE_CLIENT_SECRET',
   );
 
   static const String notionClientId = String.fromEnvironment(
@@ -44,7 +54,12 @@ abstract final class BuiltInOAuthClients {
     switch (sourceId) {
       case 'google_drive':
         if (googleDriveClientId.isEmpty) return null;
-        return const OAuthClient(clientId: googleDriveClientId);
+        return OAuthClient(
+          clientId: googleDriveClientId,
+          clientSecret: googleDriveClientSecret.isEmpty
+              ? null
+              : googleDriveClientSecret,
+        );
 
       case 'notion':
         if (notionClientId.isEmpty) return null;

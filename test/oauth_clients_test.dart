@@ -23,8 +23,12 @@ void main() {
       expect(client!.clientId, googleId);
       expect(
         client.clientSecret,
-        isNull,
-        reason: 'Google installed apps use PKCE, so no secret should ship',
+        const String.fromEnvironment('GOOGLE_DRIVE_CLIENT_SECRET').isEmpty
+            ? isNull
+            : isNotNull,
+        reason:
+            'Google Desktop clients need the secret at the token endpoint; '
+            'omitting it fails with "client_secret is missing"',
       );
     }
   });

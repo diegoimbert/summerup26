@@ -1,7 +1,12 @@
 import 'package:flutter/widgets.dart';
 
-/// How far a source has actually been built.
+/// How far a source has actually been built, and what standing between the
+/// user and their content.
 enum SourceSupport {
+  /// Already on this Mac, so there is nothing to sign in to and nothing to
+  /// authorize. Usable from the moment the app starts.
+  builtIn,
+
   /// Sign-in is wired up and credentials are persisted.
   connectable,
 
@@ -19,6 +24,7 @@ class SourceDescriptor {
     required this.logoAsset,
     required this.brandColor,
     required this.support,
+    this.hasFolders = false,
   });
 
   /// Stable key, also used to store this source's credentials.
@@ -36,15 +42,35 @@ class SourceDescriptor {
 
   final SourceSupport support;
 
-  bool get isConnectable => support == SourceSupport.connectable;
+  /// Whether this source is browsed as a folder tree, and so can be narrowed to
+  /// a chosen set of folders once connected. Page- or task-shaped sources
+  /// (Notion, Todoist, …) have nothing to scope this way.
+  final bool hasFolders;
+
+  /// Whether reaching this source needs a sign-in. True for the sources that
+  /// are not built yet as well: when they arrive, they will all want one.
+  bool get needsSignIn => support != SourceSupport.builtIn;
+
+  /// Whether there is anything behind this source yet.
+  bool get isAvailable => support != SourceSupport.planned;
 }
 
 /// Every source offered on the Sources page.
 ///
-/// Only Google Drive and Notion are [SourceSupport.connectable]; the rest are
-/// listed so the shape of the page is right, and are explicitly marked as not
-/// yet built rather than pretending to connect.
+/// Ordered by how far each one is built: the file system first, since it works
+/// without so much as a sign-in, then the sources that can be signed in to.
+/// The rest are listed so the shape of the page is right, and are explicitly
+/// marked as not yet built rather than pretending to connect.
 const List<SourceDescriptor> kSourceCatalog = [
+  SourceDescriptor(
+    id: 'file_system',
+    name: 'File System',
+    tagline: 'Folders on this Mac',
+    logoAsset: 'assets/logos/filesystem.svg',
+    brandColor: Color(0xFF6B6560),
+    support: SourceSupport.builtIn,
+    hasFolders: true,
+  ),
   SourceDescriptor(
     id: 'google_drive',
     name: 'Google Drive',
@@ -52,6 +78,7 @@ const List<SourceDescriptor> kSourceCatalog = [
     logoAsset: 'assets/logos/googledrive.svg',
     brandColor: Color(0xFF4285F4),
     support: SourceSupport.connectable,
+    hasFolders: true,
   ),
   SourceDescriptor(
     id: 'notion',
@@ -60,14 +87,6 @@ const List<SourceDescriptor> kSourceCatalog = [
     logoAsset: 'assets/logos/notion.svg',
     brandColor: Color(0xFF191919),
     support: SourceSupport.connectable,
-  ),
-  SourceDescriptor(
-    id: 'file_system',
-    name: 'File System',
-    tagline: 'Folders on this Mac',
-    logoAsset: 'assets/logos/filesystem.svg',
-    brandColor: Color(0xFF6B6560),
-    support: SourceSupport.planned,
   ),
   SourceDescriptor(
     id: 'apple_notes',
@@ -132,6 +151,7 @@ const List<SourceDescriptor> kSourceCatalog = [
     logoAsset: 'assets/logos/microsoftonedrive.svg',
     brandColor: Color(0xFF0078D4),
     support: SourceSupport.planned,
+    hasFolders: true,
   ),
   SourceDescriptor(
     id: 'dropbox',
@@ -140,6 +160,7 @@ const List<SourceDescriptor> kSourceCatalog = [
     logoAsset: 'assets/logos/dropbox.svg',
     brandColor: Color(0xFF0061FF),
     support: SourceSupport.planned,
+    hasFolders: true,
   ),
   SourceDescriptor(
     id: 'icloud_drive',
@@ -148,5 +169,6 @@ const List<SourceDescriptor> kSourceCatalog = [
     logoAsset: 'assets/logos/icloud.svg',
     brandColor: Color(0xFF3693F3),
     support: SourceSupport.planned,
+    hasFolders: true,
   ),
 ];

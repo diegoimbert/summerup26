@@ -49,6 +49,7 @@ class ConnectionsController extends ChangeNotifier {
   final OAuthFlow _flow;
 
   Map<String, SourceCredentials> _connections = {};
+  Map<String, List<String>> _folders = {};
   final Set<String> _busy = {};
   final Map<String, String> _errors = {};
 
@@ -69,9 +70,26 @@ class ConnectionsController extends ChangeNotifier {
   bool isConfigured(String sourceId) =>
       BuiltInOAuthClients.forSource(sourceId) != null;
 
+  /// The folders [sourceId] has been narrowed to. Empty means everything in
+  /// the source is in scope.
+  List<String> foldersFor(String sourceId) =>
+      _folders[sourceId] ?? const <String>[];
+
   Future<void> load() async {
     _connections = await _store.readAll();
+    _folders = await _store.readAllFolders();
     _loaded = true;
+    notifyListeners();
+  }
+
+  Future<void> setFolders(String sourceId, List<String> folders) async {
+    await _store.saveFolders(sourceId, folders);
+    _folders = {..._folders};
+    if (folders.isEmpty) {
+      _folders.remove(sourceId);
+    } else {
+      _folders[sourceId] = List.unmodifiable(folders);
+    }
     notifyListeners();
   }
 

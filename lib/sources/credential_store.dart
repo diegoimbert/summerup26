@@ -100,22 +100,28 @@ class CredentialStore {
     if (cached != null) return cached;
 
     final file = await _resolveFile();
-    if (!await file.exists()) {
-      return _cache = {'version': 1, 'clients': {}, 'connections': {}};
-    }
+    if (!await file.exists()) return _cache = _empty();
 
     try {
       final decoded = jsonDecode(await file.readAsString());
       final map = (decoded as Map).cast<String, dynamic>();
       map.putIfAbsent('clients', () => <String, dynamic>{});
       map.putIfAbsent('connections', () => <String, dynamic>{});
+      map.putIfAbsent('folders', () => <String, dynamic>{});
       return _cache = map;
     } on FormatException {
       // A corrupt file should not wedge the app; start over rather than throw
       // on every read.
-      return _cache = {'version': 1, 'clients': {}, 'connections': {}};
+      return _cache = _empty();
     }
   }
+
+  static Map<String, dynamic> _empty() => {
+    'version': 1,
+    'clients': <String, dynamic>{},
+    'connections': <String, dynamic>{},
+    'folders': <String, dynamic>{},
+  };
 
   Future<void> _write(Map<String, dynamic> data) async {
     final file = await _resolveFile();
@@ -158,6 +164,28 @@ class CredentialStore {
   Future<void> delete(String sourceId) async {
     final data = await _read();
     (data['connections'] as Map).remove(sourceId);
+    await _write(data);
+  }
+
+  /// The folders a source has been narrowed to, in the order the user added
+  /// them. Empty means the whole source is in scope.
+  Future<Map<String, List<String>>> readAllFolders() async {
+    final data = await _read();
+    final folders = (data['folders'] as Map).cast<String, dynamic>();
+    return {
+      for (final entry in folders.entries)
+        entry.key: (entry.value as List).cast<String>(),
+    };
+  }
+
+  Future<void> saveFolders(String sourceId, List<String> folders) async {
+    final data = await _read();
+    final all = data['folders'] as Map;
+    if (folders.isEmpty) {
+      all.remove(sourceId);
+    } else {
+      all[sourceId] = folders;
+    }
     await _write(data);
   }
 }

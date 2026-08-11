@@ -4,6 +4,7 @@ import '../sources/connections.dart';
 import '../sources/source_catalog.dart';
 import '../theme.dart';
 import '../widgets/source_logo.dart';
+import 'source_folders_dialog.dart';
 
 /// What Kandoo will be able to do once a source is connected, in plain words.
 ///
@@ -101,8 +102,13 @@ class _SourceConnectDialog extends StatelessWidget {
 
                   if (credentials == null)
                     _PermissionList(sourceId: source.id)
-                  else
+                  else ...[
                     const _ConnectedSummary(),
+                    if (source.hasFolders) ...[
+                      const SizedBox(height: 10),
+                      _FolderScope(source: source, connections: connections),
+                    ],
+                  ],
 
                   if (!configured && credentials == null) ...[
                     const SizedBox(height: 14),
@@ -267,6 +273,73 @@ class _ConnectedSummary extends StatelessWidget {
                 height: 1.4,
                 color: KandooColors.textSecondary,
               ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// How much of a folder-shaped source is in scope, and the way into changing
+/// it.
+class _FolderScope extends StatelessWidget {
+  const _FolderScope({required this.source, required this.connections});
+
+  final SourceDescriptor source;
+  final ConnectionsController connections;
+
+  @override
+  Widget build(BuildContext context) {
+    final folders = connections.foldersFor(source.id);
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
+      decoration: BoxDecoration(
+        color: KandooColors.surface,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: KandooColors.divider),
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.folder_outlined,
+            size: 15,
+            color: KandooColors.accent,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              switch (folders.length) {
+                0 => 'Reading every folder.',
+                1 => 'Reading 1 folder.',
+                final count => 'Reading $count folders.',
+              },
+              style: const TextStyle(
+                fontSize: 12.5,
+                height: 1.4,
+                color: KandooColors.textSecondary,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          TextButton(
+            onPressed: () => showSourceFoldersDialog(
+              context,
+              source: source,
+              connections: connections,
+            ),
+            style: TextButton.styleFrom(
+              foregroundColor: KandooColors.accentDeep,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              visualDensity: VisualDensity.compact,
+            ),
+            // Styled on the label rather than through styleFrom's textStyle,
+            // which drops the theme's font family.
+            child: const Text(
+              'Configure folders',
+              style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
             ),
           ),
         ],

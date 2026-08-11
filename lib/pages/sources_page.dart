@@ -8,6 +8,7 @@ import '../widgets/page_shell.dart';
 import '../widgets/search_field.dart';
 import '../widgets/source_logo.dart';
 import 'source_connect_dialog.dart';
+import 'source_folders_dialog.dart';
 
 /// The Sources section: every provider Kandoo can draw from, with search.
 class SourcesPage extends StatefulWidget {
@@ -41,13 +42,23 @@ class _SourcesPageState extends State<SourcesPage> {
   }
 
   Future<void> _openSource(SourceDescriptor source) async {
-    if (!source.isConnectable) {
+    if (!source.isAvailable) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('${source.name} is not available yet.'),
           behavior: SnackBarBehavior.floating,
           width: 320,
         ),
+      );
+      return;
+    }
+
+    // Nothing to sign in to, so the folders are the whole of the setup.
+    if (!source.needsSignIn) {
+      await showSourceFoldersDialog(
+        context,
+        source: source,
+        connections: widget.connections,
       );
       return;
     }
@@ -156,7 +167,11 @@ class _SourceCardState extends State<_SourceCard> {
 
   @override
   Widget build(BuildContext context) {
-    final connected = widget.credentials != null;
+    final source = widget.source;
+
+    // A source that needs no sign-in has nothing to connect to, so it counts as
+    // connected from the moment the app opens.
+    final connected = widget.credentials != null || !source.needsSignIn;
 
     return MouseRegion(
       cursor: SystemMouseCursors.click,
@@ -184,17 +199,17 @@ class _SourceCardState extends State<_SourceCard> {
                 : null,
           ),
           child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              SourceLogo(source: widget.source),
+              SourceLogo(source: source),
               const SizedBox(width: 13),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisAlignment: MainAxisAlignment.center,
+                  mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      widget.source.name,
+                      source.name,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                         fontFamily: KandooFonts.heading,
@@ -206,9 +221,10 @@ class _SourceCardState extends State<_SourceCard> {
                     ),
                     const SizedBox(height: 3),
                     Text(
-                      connected
-                          ? (widget.credentials!.accountLabel ?? 'Connected')
-                          : widget.source.tagline,
+                      // The pill already says a source is connected, so an
+                      // account-less connection falls back to the tagline
+                      // rather than repeating the word.
+                      widget.credentials?.accountLabel ?? source.tagline,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
@@ -230,8 +246,8 @@ class _SourceCardState extends State<_SourceCard> {
   }
 }
 
-/// Right-hand affordance: a spinner while signing in, a check once connected,
-/// otherwise the connect chevron.
+/// Right-hand affordance: a spinner while signing in, a pill once the source
+/// is connected, otherwise the connect affordance.
 class _StatusPill extends StatelessWidget {
   const _StatusPill({required this.connected, required this.busy});
 

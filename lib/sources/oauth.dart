@@ -7,7 +7,26 @@ import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 
-import 'credential_store.dart';
+/// The OAuth client Kandoo identifies itself with.
+///
+/// Supplied at build time, never by the user. See [BuiltInOAuthClients].
+class OAuthClient {
+  const OAuthClient({
+    required this.clientId,
+    this.clientSecret,
+    this.tokenProxy,
+  });
+
+  final String clientId;
+
+  /// Only set for providers that require it and only where it can be held
+  /// safely; prefer [tokenProxy] in shipped builds.
+  final String? clientSecret;
+
+  /// An endpoint that performs the code-for-token exchange server-side, so the
+  /// client secret never ships inside the app.
+  final Uri? tokenProxy;
+}
 
 class OAuthException implements Exception {
   OAuthException(this.message);
@@ -207,6 +226,26 @@ class OAuthFlow {
       'Accept': 'application/json',
       'Content-Type': 'application/x-www-form-urlencoded',
     };
+
+    // When a proxy is configured it owns the client credentials, so hand it the
+    // code and let it authenticate against the provider.
+    final proxy = client.tokenProxy;
+    if (proxy != null) {
+      final response = await _http.post(
+        proxy,
+        headers: const {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode(body),
+      );
+      if (response.statusCode != 200) {
+        throw OAuthException(
+          'Token exchange failed (${response.statusCode}): ${response.body}',
+        );
+      }
+      return (jsonDecode(response.body) as Map).cast<String, dynamic>();
+    }
 
     switch (provider.tokenAuthStyle) {
       case TokenAuthStyle.requestBody:

@@ -3,30 +3,6 @@ import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
 
-/// OAuth client credentials for one provider.
-///
-/// Kandoo ships no client of its own, so each user registers an app with the
-/// provider and pastes the identifiers in. They live beside the tokens.
-class OAuthClient {
-  const OAuthClient({required this.clientId, this.clientSecret});
-
-  final String clientId;
-
-  /// Google desktop clients issue one but treat it as non-confidential; Notion
-  /// requires it for the token exchange.
-  final String? clientSecret;
-
-  Map<String, dynamic> toJson() => {
-    'clientId': clientId,
-    if (clientSecret != null) 'clientSecret': clientSecret,
-  };
-
-  static OAuthClient fromJson(Map<String, dynamic> json) => OAuthClient(
-    clientId: json['clientId'] as String,
-    clientSecret: json['clientSecret'] as String?,
-  );
-}
-
 /// A completed connection to a provider.
 class SourceCredentials {
   const SourceCredentials({
@@ -152,19 +128,6 @@ class CredentialStore {
 
   /// Where credentials are written, for display in the UI.
   Future<String> location() async => (await _resolveFile()).path;
-
-  Future<OAuthClient?> readClient(String sourceId) async {
-    final data = await _read();
-    final raw = (data['clients'] as Map)[sourceId];
-    if (raw == null) return null;
-    return OAuthClient.fromJson((raw as Map).cast<String, dynamic>());
-  }
-
-  Future<void> saveClient(String sourceId, OAuthClient client) async {
-    final data = await _read();
-    (data['clients'] as Map)[sourceId] = client.toJson();
-    await _write(data);
-  }
 
   Future<SourceCredentials?> read(String sourceId) async {
     final data = await _read();

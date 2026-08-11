@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import 'credential_store.dart';
 import 'oauth.dart';
+import 'oauth_clients.dart';
 
 /// The providers Kandoo can actually sign in to, and how.
 ///
@@ -59,17 +60,20 @@ class ConnectionsController extends ChangeNotifier {
   bool isBusy(String sourceId) => _busy.contains(sourceId);
   String? errorFor(String sourceId) => _errors[sourceId];
 
-  Future<OAuthClient?> clientFor(String sourceId) => _store.readClient(sourceId);
   Future<String> storeLocation() => _store.location();
+
+  /// Whether this build carries OAuth credentials for [sourceId].
+  ///
+  /// False means the app was built without them — a packaging problem, not
+  /// something the user can fix.
+  bool isConfigured(String sourceId) =>
+      BuiltInOAuthClients.forSource(sourceId) != null;
 
   Future<void> load() async {
     _connections = await _store.readAll();
     _loaded = true;
     notifyListeners();
   }
-
-  Future<void> saveClient(String sourceId, OAuthClient client) =>
-      _store.saveClient(sourceId, client);
 
   /// Runs the provider's sign-in and persists whatever comes back.
   Future<void> connect(String sourceId) async {
@@ -79,9 +83,12 @@ class ConnectionsController extends ChangeNotifier {
       return;
     }
 
-    final client = await _store.readClient(sourceId);
-    if (client == null || client.clientId.isEmpty) {
-      _fail(sourceId, 'Add your OAuth client details first.');
+    final client = BuiltInOAuthClients.forSource(sourceId);
+    if (client == null) {
+      _fail(
+        sourceId,
+        'This build of Kandoo has no $sourceId credentials configured.',
+      );
       return;
     }
 

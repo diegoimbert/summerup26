@@ -12,7 +12,7 @@ class MainFlutterWindow: NSWindow {
 
     RegisterGeneratedPlugins(registry: flutterViewController)
 
-    self.title = "Overlay"
+    self.title = "Kandoo"
     self.minSize = NSSize(width: 420, height: 360)
     // The app outlives its window so the global shortcut keeps working; keep
     // the window around so the Dock icon can bring it back.

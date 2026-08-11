@@ -57,6 +57,35 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
+  # Typography copied from getkandoo.app: Instrument Sans for headings, Inter
+  # for body copy, JetBrains Mono for numerals and metadata. Static instances
+  # are bundled rather than fetched at runtime, so the app needs no network
+  # access and text never reflows after a late font load. All three are
+  # SIL Open Font License 1.1.
+  fonts:
+    - family: Instrument Sans
+      fonts:
+        - asset: assets/fonts/InstrumentSans-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/InstrumentSans-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/InstrumentSans-SemiBold.ttf
+          weight: 600
+    - family: Inter
+      fonts:
+        - asset: assets/fonts/Inter-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Inter-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Inter-SemiBold.ttf
+          weight: 600
+    - family: JetBrains Mono
+      fonts:
+        - asset: assets/fonts/JetBrainsMono-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/JetBrainsMono-Medium.ttf
+          weight: 500
+
   # To add assets to your application, add an assets section, like this:
   # assets:
   #   - images/a_dot_burr.jpeg

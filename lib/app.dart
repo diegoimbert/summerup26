@@ -1,36 +1,41 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
-import 'overlay_bridge.dart';
+import 'theme.dart';
 
 /// Runs the main application window.
-void runOverlayApp() {
-  runApp(const OverlayApp());
+void runKandooApp() {
+  runApp(const KandooApp());
 }
 
-class OverlayApp extends StatelessWidget {
-  const OverlayApp({super.key});
+class KandooApp extends StatelessWidget {
+  const KandooApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    final scheme = ColorScheme.fromSeed(
-      seedColor: const Color(0xFF4ADE80),
-      brightness: Brightness.dark,
-    );
-
     return MaterialApp(
-      title: 'Overlay',
+      title: 'Kandoo',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: scheme,
-        scaffoldBackgroundColor: const Color(0xFF141417),
-        useMaterial3: true,
-      ),
+      theme: buildKandooTheme(),
       home: const HomePage(),
     );
   }
 }
+
+/// One entry in the left side menu.
+class NavSection {
+  const NavSection(this.label, this.icon);
+
+  final String label;
+  final IconData icon;
+}
+
+const List<NavSection> kNavSections = [
+  NavSection('Today', Icons.wb_sunny_outlined),
+  NavSection('Chat', Icons.chat_bubble_outline),
+  NavSection('Files', Icons.insert_drive_file_outlined),
+  NavSection('Sources', Icons.storage_outlined),
+  NavSection('Pattern recognized', Icons.grid_view_outlined),
+];
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -40,238 +45,144 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  final OverlayBridge _bridge = OverlayBridge.instance;
-
-  StreamSubscription<bool>? _visibilitySub;
-  bool _visible = false;
-  String _shortcut = '';
-
-  @override
-  void initState() {
-    super.initState();
-    _visibilitySub = _bridge.onVisibilityChanged.listen((visible) {
-      if (mounted) setState(() => _visible = visible);
-    });
-    _load();
-  }
-
-  @override
-  void dispose() {
-    _visibilitySub?.cancel();
-    super.dispose();
-  }
-
-  Future<void> _load() async {
-    final shortcut = await _bridge.shortcutLabel();
-    final visible = await _bridge.isVisible();
-    if (!mounted) return;
-    setState(() {
-      _shortcut = shortcut;
-      _visible = visible;
-    });
-  }
+  int _selectedIndex = 0;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
     return Scaffold(
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(32, 28, 32, 32),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Overlay',
-              style: theme.textTheme.headlineMedium?.copyWith(
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'A floating toast that stays above your other windows.',
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: Colors.white70,
-              ),
-            ),
-            const SizedBox(height: 28),
-            _ShortcutCard(shortcut: _shortcut),
-            const SizedBox(height: 16),
-            _StatusCard(
-              visible: _visible,
-              onToggle: () => _bridge.toggle(),
-            ),
-          ],
-        ),
+      body: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _Sidebar(
+            selectedIndex: _selectedIndex,
+            onSelected: (index) => setState(() => _selectedIndex = index),
+          ),
+          // Content area, intentionally empty for now.
+          const Expanded(child: SizedBox.expand()),
+        ],
       ),
     );
   }
 }
 
-/// Shows the global shortcut that summons the toast.
-class _ShortcutCard extends StatelessWidget {
-  const _ShortcutCard({required this.shortcut});
+class _Sidebar extends StatelessWidget {
+  const _Sidebar({required this.selectedIndex, required this.onSelected});
 
-  final String shortcut;
+  static const double width = 232;
+
+  final int selectedIndex;
+  final ValueChanged<int> onSelected;
 
   @override
   Widget build(BuildContext context) {
-    return _Card(
+    return Container(
+      width: width,
+      decoration: const BoxDecoration(
+        color: KandooColors.sidebar,
+        border: Border(right: BorderSide(color: KandooColors.divider)),
+      ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const _CardTitle('Global shortcut'),
-          const SizedBox(height: 4),
-          const Text(
-            'Works from any app, even when Overlay is in the background.',
-            style: TextStyle(color: Colors.white70, fontSize: 13),
-          ),
-          const SizedBox(height: 16),
-          if (shortcut.isEmpty)
-            const SizedBox(
-              height: 34,
-              child: Center(
-                child: SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(20, 24, 20, 20),
+            child: Text(
+              'Kandoo',
+              style: TextStyle(
+                fontFamily: KandooFonts.heading,
+                color: KandooColors.textPrimary,
+                fontSize: 19,
+                fontWeight: FontWeight.w600,
+                letterSpacing: -0.3,
               ),
-            )
-          else
-            Wrap(
-              spacing: 6,
-              children: [
-                for (final key in _splitShortcut(shortcut)) _KeyCap(key),
-              ],
             ),
+          ),
+          Expanded(
+            child: ListView.builder(
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              itemCount: kNavSections.length,
+              itemBuilder: (context, index) {
+                return _NavTile(
+                  section: kNavSections[index],
+                  selected: index == selectedIndex,
+                  onTap: () => onSelected(index),
+                );
+              },
+            ),
+          ),
         ],
       ),
     );
   }
-
-  /// Splits `⇧⌘Space` into its individual caps: the modifiers are single
-  /// symbols, and whatever trails them is the key name.
-  static List<String> _splitShortcut(String shortcut) {
-    const modifiers = {'⌃', '⌥', '⇧', '⌘'};
-    final caps = <String>[];
-    final buffer = StringBuffer();
-
-    for (final rune in shortcut.runes) {
-      final char = String.fromCharCode(rune);
-      if (modifiers.contains(char)) {
-        caps.add(char);
-      } else {
-        buffer.write(char);
-      }
-    }
-    if (buffer.isNotEmpty) caps.add(buffer.toString());
-    return caps;
-  }
 }
 
-/// Shows whether the toast is on screen, with a manual toggle.
-class _StatusCard extends StatelessWidget {
-  const _StatusCard({required this.visible, required this.onToggle});
+class _NavTile extends StatefulWidget {
+  const _NavTile({
+    required this.section,
+    required this.selected,
+    required this.onTap,
+  });
 
-  final bool visible;
-  final VoidCallback onToggle;
+  final NavSection section;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  State<_NavTile> createState() => _NavTileState();
+}
+
+class _NavTileState extends State<_NavTile> {
+  bool _hovered = false;
 
   @override
   Widget build(BuildContext context) {
-    return _Card(
-      child: Row(
-        children: [
-          Container(
-            width: 10,
-            height: 10,
+    final selected = widget.selected;
+    final foreground = selected
+        ? KandooColors.accent
+        : KandooColors.textSecondary;
+
+    final Color background;
+    if (selected) {
+      background = KandooColors.selectedFill;
+    } else if (_hovered) {
+      background = KandooColors.hoverFill;
+    } else {
+      background = Colors.transparent;
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 2),
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hovered = true),
+        onExit: (_) => setState(() => _hovered = false),
+        child: GestureDetector(
+          onTap: widget.onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 120),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
             decoration: BoxDecoration(
-              color: visible ? const Color(0xFF4ADE80) : Colors.white24,
-              shape: BoxShape.circle,
+              color: background,
+              borderRadius: BorderRadius.circular(9),
             ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            child: Row(
               children: [
-                const _CardTitle('Toast'),
-                const SizedBox(height: 2),
-                Text(
-                  visible ? 'Showing' : 'Hidden',
-                  style: const TextStyle(color: Colors.white70, fontSize: 13),
+                Icon(widget.section.icon, size: 18, color: foreground),
+                const SizedBox(width: 11),
+                Expanded(
+                  child: Text(
+                    widget.section.label,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: selected ? KandooColors.textPrimary : foreground,
+                      fontSize: 14,
+                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                    ),
+                  ),
                 ),
               ],
             ),
           ),
-          FilledButton(
-            onPressed: onToggle,
-            child: Text(visible ? 'Hide' : 'Show'),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _Card extends StatelessWidget {
-  const _Card({required this.child});
-
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1E1E22),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
-      ),
-      child: child,
-    );
-  }
-}
-
-class _CardTitle extends StatelessWidget {
-  const _CardTitle(this.text);
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Text(
-      text,
-      style: const TextStyle(
-        color: Colors.white,
-        fontSize: 15,
-        fontWeight: FontWeight.w600,
-      ),
-    );
-  }
-}
-
-class _KeyCap extends StatelessWidget {
-  const _KeyCap(this.label);
-
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-      decoration: BoxDecoration(
-        color: const Color(0xFF2A2A30),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
-      ),
-      child: Text(
-        label,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 14,
-          fontWeight: FontWeight.w600,
         ),
       ),
     );

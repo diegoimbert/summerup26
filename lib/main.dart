@@ -3,7 +3,7 @@ import 'overlay_toast.dart';
 
 /// Entrypoint for the main application window.
 void main() {
-  runOverlayApp();
+  runKandooApp();
 }
 
 /// Entrypoint for the floating overlay toast.

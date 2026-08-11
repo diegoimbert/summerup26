@@ -66,7 +66,7 @@ class _HomePageState extends State<HomePage> {
     return switch (index) {
       0 => const TodayPage(),
       1 => const ChatPage(),
-      2 => const FilesPage(),
+      2 => FilesPage(connections: _connections),
       3 => SourcesPage(connections: _connections),
       _ => const PatternsPage(),
     };

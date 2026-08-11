@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'library/library_controller.dart';
 import 'pages/chat_page.dart';
 import 'pages/files_page.dart';
 import 'pages/patterns_page.dart';
@@ -54,10 +55,29 @@ class _HomePageState extends State<HomePage> {
   /// Shared across sections so connection state survives navigation.
   final ConnectionsController _connections = ConnectionsController();
 
+  late final LibraryController _library = LibraryController(
+    connections: _connections,
+  );
+
   int _selectedIndex = 0;
 
   @override
+  void initState() {
+    super.initState();
+    _start();
+  }
+
+  /// Everything the window needs before it is worth looking at: who is
+  /// connected, what was organized last time, and a fresh scan of the sources.
+  Future<void> _start() async {
+    await _connections.load();
+    await _library.load();
+    await _library.refresh();
+  }
+
+  @override
   void dispose() {
+    _library.dispose();
     _connections.dispose();
     super.dispose();
   }
@@ -66,7 +86,7 @@ class _HomePageState extends State<HomePage> {
     return switch (index) {
       0 => const TodayPage(),
       1 => const ChatPage(),
-      2 => FilesPage(connections: _connections),
+      2 => FilesPage(connections: _connections, library: _library),
       3 => SourcesPage(connections: _connections),
       _ => const PatternsPage(),
     };
@@ -78,9 +98,15 @@ class _HomePageState extends State<HomePage> {
       body: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _Sidebar(
-            selectedIndex: _selectedIndex,
-            onSelected: (index) => setState(() => _selectedIndex = index),
+          AnimatedBuilder(
+            animation: _library,
+            builder: (context, _) => _Sidebar(
+              selectedIndex: _selectedIndex,
+              onSelected: (index) => setState(() => _selectedIndex = index),
+              // Scanning starts on launch, wherever the user happens to be, so
+              // the Files entry carries the news out of the section.
+              busyIndex: _library.isBusy ? 2 : null,
+            ),
           ),
           Expanded(
             // Keyed so each section rebuilds its own state cleanly on switch.
@@ -96,12 +122,19 @@ class _HomePageState extends State<HomePage> {
 }
 
 class _Sidebar extends StatelessWidget {
-  const _Sidebar({required this.selectedIndex, required this.onSelected});
+  const _Sidebar({
+    required this.selectedIndex,
+    required this.onSelected,
+    this.busyIndex,
+  });
 
   static const double width = 232;
 
   final int selectedIndex;
   final ValueChanged<int> onSelected;
+
+  /// The section with work running in the background, if any.
+  final int? busyIndex;
 
   @override
   Widget build(BuildContext context) {
@@ -135,6 +168,7 @@ class _Sidebar extends StatelessWidget {
                 return _NavTile(
                   section: kNavSections[index],
                   selected: index == selectedIndex,
+                  busy: index == busyIndex,
                   onTap: () => onSelected(index),
                 );
               },
@@ -151,11 +185,15 @@ class _NavTile extends StatefulWidget {
     required this.section,
     required this.selected,
     required this.onTap,
+    this.busy = false,
   });
 
   final NavSection section;
   final bool selected;
   final VoidCallback onTap;
+
+  /// Shows a spinner beside the label while this section has work running.
+  final bool busy;
 
   @override
   State<_NavTile> createState() => _NavTileState();
@@ -210,6 +248,12 @@ class _NavTileState extends State<_NavTile> {
                     ),
                   ),
                 ),
+                if (widget.busy)
+                  const SizedBox(
+                    width: 11,
+                    height: 11,
+                    child: CircularProgressIndicator(strokeWidth: 1.6),
+                  ),
               ],
             ),
           ),

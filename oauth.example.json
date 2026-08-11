@@ -10,5 +10,8 @@
   "NOTION_TOKEN_PROXY": "https://api.example.com/notion/token",
 
   "_notion_dev_only": "Local development shortcut. Never set this in a build you distribute: anything in the binary can be extracted.",
-  "NOTION_CLIENT_SECRET": ""
+  "NOTION_CLIENT_SECRET": "",
+
+  "_deepseek": "platform.deepseek.com > API keys. Used once per scan to file what was found into folders and categories; a build without it still scans and browses, and the Files section says the key is missing. Server keys are confidential, so a distributed build should call a proxy you host rather than carrying this.",
+  "DEEPSEEK_API_KEY": "sk-xxxxxxxxxxxxxxxx"
 }

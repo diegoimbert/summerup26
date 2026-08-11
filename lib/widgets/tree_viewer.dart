@@ -10,6 +10,7 @@ class TreeEntry {
     required this.label,
     this.isFolder = false,
     this.icon,
+    this.detail,
   });
 
   /// Stable identity, and what the loader is handed to fetch children. A path
@@ -24,6 +25,10 @@ class TreeEntry {
   /// Overrides the default folder/file icon, for sources whose items have a
   /// type of their own (a doc, a spreadsheet, …).
   final IconData? icon;
+
+  /// Metadata shown quietly at the end of the row: a count and the sources a
+  /// folder draws on, a date and origin for a file.
+  final String? detail;
 }
 
 /// Thrown by a loader when a folder cannot be listed. The message is shown in
@@ -326,6 +331,24 @@ class _TreeTileState extends State<_TreeTile> {
                   ),
                 ),
               ),
+              if (entry.detail != null) ...[
+                const SizedBox(width: 12),
+                // Bounded so a long detail gives way to the name rather than
+                // squeezing it out.
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 190),
+                  child: Text(
+                    entry.detail!,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.right,
+                    style: const TextStyle(
+                      fontFamily: KandooFonts.mono,
+                      fontSize: 10.5,
+                      color: KandooColors.textMuted,
+                    ),
+                  ),
+                ),
+              ],
             ],
           ),
         ),

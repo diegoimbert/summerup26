@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:overlay_app/library/library_controller.dart';
 import 'package:overlay_app/pages/files_page.dart';
 import 'package:overlay_app/sources/connections.dart';
 import 'package:overlay_app/sources/credential_store.dart';
@@ -60,12 +61,21 @@ Future<_FakeTree> _pumpFiles(WidgetTester tester, CredentialStore store) async {
   final connections = ConnectionsController(store: store);
   await connections.load();
 
+  // Left idle: the library's own behaviour is covered in library_test.dart,
+  // and these tests are about the grid and the sources behind it.
+  final library = LibraryController(connections: connections);
+  addTearDown(library.dispose);
+
   final tree = _FakeTree();
   await tester.pumpWidget(
     MaterialApp(
       theme: buildKandooTheme(),
       home: Scaffold(
-        body: FilesPage(connections: connections, treeLoader: tree.loaderFor),
+        body: FilesPage(
+          connections: connections,
+          library: library,
+          treeLoader: tree.loaderFor,
+        ),
       ),
     ),
   );
@@ -89,7 +99,41 @@ void main() {
     expect(find.text('Google Drive'), findsNothing);
     expect(find.text('Dropbox'), findsNothing);
 
-    expect(find.text('Choose a source above to browse it'), findsOneWidget);
+    // With nothing picked, the section shows the organized library — which
+    // here has nothing in it and no folders to fill it from.
+    expect(
+      find.text(
+        'No folders to scan yet.\nAdd some to File System under Sources.',
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.text('Nothing to scan yet — add folders to a source under Sources.'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('picking the open source again returns to the library', (
+    tester,
+  ) async {
+    await _pumpFiles(
+      tester,
+      _MemoryStore(
+        folders: {
+          'file_system': ['/Users/diegoimbert/Desktop'],
+        },
+      ),
+    );
+
+    await tester.tap(find.text('File System'));
+    await tester.pumpAndSettle();
+    expect(find.byType(TreeViewer), findsOneWidget);
+
+    await tester.tap(find.text('Library'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(TreeViewer), findsNothing);
+    expect(find.text('Nothing organized yet'), findsOneWidget);
   });
 
   testWidgets('one configured folder goes straight to the tree', (

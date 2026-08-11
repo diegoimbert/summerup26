@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../library/library_controller.dart';
 import '../sources/connections.dart';
 import '../sources/file_system_browser.dart';
 import '../sources/source_catalog.dart';
@@ -22,18 +23,25 @@ typedef SourceTreeLoader =
 TreeChildrenLoader defaultTreeLoader(SourceDescriptor source, String root) =>
     FileSystemBrowser(rootPath: root).children;
 
-/// The Files section: pick a connected source, then browse it.
+/// The Files section.
+///
+/// What it shows by default is the organized library: the virtual tree the
+/// model built out of everything the sources hold. The grid at the top is the
+/// way down to a source as it really is, for when the tidy view is not what the
+/// user is after.
 class FilesPage extends StatefulWidget {
   const FilesPage({
     super.key,
     required this.connections,
+    required this.library,
     this.treeLoader = defaultTreeLoader,
   });
 
   final ConnectionsController connections;
+  final LibraryController library;
 
-  /// Where the tree's rows come from. Overridden in tests, which cannot wait
-  /// on real disk reads.
+  /// Where a source's raw tree comes from. Overridden in tests, which cannot
+  /// wait on real disk reads.
   final SourceTreeLoader treeLoader;
 
   @override
@@ -63,7 +71,17 @@ class _FilesPageState extends State<FilesPage> {
       )
       .toList();
 
+  /// Opens a source's own tree, or returns to the library when the source
+  /// already showing is tapped again.
   void _select(SourceDescriptor source) {
+    if (_source?.id == source.id) {
+      setState(() {
+        _source = null;
+        _root = null;
+      });
+      return;
+    }
+
     final folders = widget.connections.foldersFor(source.id);
 
     setState(() {
@@ -81,7 +99,7 @@ class _FilesPageState extends State<FilesPage> {
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: widget.connections,
+      animation: Listenable.merge([widget.connections, widget.library]),
       builder: (context, _) {
         final sources = _connected;
 
@@ -104,6 +122,7 @@ class _FilesPageState extends State<FilesPage> {
                 selectedId: _source?.id,
                 onSelected: _select,
               ),
+              ScanStatusStrip(library: widget.library),
               const Divider(height: 1, color: KandooColors.divider),
               Expanded(child: _body()),
             ],
@@ -115,12 +134,9 @@ class _FilesPageState extends State<FilesPage> {
 
   Widget _body() {
     final source = _source;
-    if (source == null) {
-      return const EmptySection(
-        icon: Icons.folder_open_outlined,
-        message: 'Choose a source above to browse it',
-      );
-    }
+    // Nothing picked out of the grid means the organized library, which is the
+    // point of the section.
+    if (source == null) return _LibraryView(library: widget.library);
 
     if (!kBrowsableSources.contains(source.id)) {
       return EmptySection(
@@ -148,6 +164,10 @@ class _FilesPageState extends State<FilesPage> {
           onChange: folders.length > 1
               ? () => setState(() => _root = null)
               : null,
+          onLibrary: () => setState(() {
+            _source = null;
+            _root = null;
+          }),
         ),
         Expanded(
           child: TreeViewer(
@@ -158,6 +178,166 @@ class _FilesPageState extends State<FilesPage> {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Says what the scan is doing, and offers the way to run it again.
+///
+/// Scanning starts on launch and can take a while on a large folder, so it is
+/// never silent: the strip is where the user finds out their files are being
+/// read, placed, or that something went wrong.
+class ScanStatusStrip extends StatelessWidget {
+  const ScanStatusStrip({super.key, required this.library});
+
+  final LibraryController library;
+
+  @override
+  Widget build(BuildContext context) {
+    final (message, isError) = _statusFor(library);
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(32, 0, 24, 16),
+      child: Row(
+        children: [
+          if (library.isBusy)
+            const SizedBox(
+              width: 13,
+              height: 13,
+              child: CircularProgressIndicator(strokeWidth: 1.8),
+            )
+          else
+            Icon(
+              isError ? Icons.error_outline : Icons.auto_awesome_outlined,
+              size: 14,
+              color: isError ? const Color(0xFFC0392B) : KandooColors.textMuted,
+            ),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Text(
+              message,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 12.5,
+                color: isError
+                    ? const Color(0xFFC0392B)
+                    : KandooColors.textSecondary,
+              ),
+            ),
+          ),
+          if (!library.isBusy && library.hasScannableFolders)
+            TextButton(
+              onPressed: () => library.refresh(force: true),
+              style: TextButton.styleFrom(
+                foregroundColor: KandooColors.accentDeep,
+                visualDensity: VisualDensity.compact,
+              ),
+              child: Text(
+                library.stage == LibraryStage.failed ? 'Try again' : 'Rescan',
+                style: const TextStyle(fontSize: 12.5),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  static (String, bool) _statusFor(LibraryController library) {
+    switch (library.stage) {
+      case LibraryStage.scanning:
+        final source = library.currentSource ?? 'your sources';
+        final found = library.scannedCount;
+        return (
+          found == 0
+              ? 'Scanning $source…'
+              : 'Scanning $source — $found files so far',
+          false,
+        );
+
+      case LibraryStage.organizing:
+        final placed = library.organizedCount;
+        return (
+          'Organizing ${library.scannedCount} files with DeepSeek'
+              '${placed == 0 ? '…' : ' — $placed placed'}',
+          false,
+        );
+
+      case LibraryStage.failed:
+        return (library.error ?? 'Something went wrong.', true);
+
+      case LibraryStage.idle:
+      case LibraryStage.ready:
+        if (!library.hasScannableFolders) {
+          return (
+            'Nothing to scan yet — add folders to a source under Sources.',
+            false,
+          );
+        }
+        if (library.entries.isEmpty) {
+          return ('Nothing scanned yet.', false);
+        }
+        final count = library.entries.length;
+        final when = library.organizedAt;
+        return (
+          '$count files organized${library.truncated ? ' (scan stopped at its limit)' : ''}'
+              '${when == null ? '' : ' · ${_ago(when)}'}',
+          false,
+        );
+    }
+  }
+
+  static String _ago(DateTime when) {
+    final elapsed = DateTime.now().difference(when);
+    if (elapsed.inMinutes < 1) return 'just now';
+    if (elapsed.inMinutes < 60) return '${elapsed.inMinutes} min ago';
+    if (elapsed.inHours < 24) {
+      return '${elapsed.inHours} hour${elapsed.inHours == 1 ? '' : 's'} ago';
+    }
+    final month = when.month.toString().padLeft(2, '0');
+    final day = when.day.toString().padLeft(2, '0');
+    return 'on ${when.year}-$month-$day';
+  }
+}
+
+/// The organized library, or an explanation of why there is none yet.
+class _LibraryView extends StatelessWidget {
+  const _LibraryView({required this.library});
+
+  final LibraryController library;
+
+  @override
+  Widget build(BuildContext context) {
+    if (library.entries.isNotEmpty) {
+      return TreeViewer(
+        // A fresh arrangement is a different tree, not the old one with new
+        // rows, so it starts collapsed again.
+        key: ValueKey(library.organizedAt),
+        loadChildren: library.tree.childrenOf,
+        emptyMessage: 'Nothing filed here',
+      );
+    }
+
+    if (library.isBusy) {
+      // The strip above is already counting; this keeps the body from reading
+      // as empty while it works.
+      return const EmptySection(
+        icon: Icons.auto_awesome_outlined,
+        message: 'Building your library…',
+      );
+    }
+
+    if (!library.hasScannableFolders) {
+      return const EmptySection(
+        icon: Icons.folder_off_outlined,
+        message:
+            'No folders to scan yet.\n'
+            'Add some to File System under Sources.',
+      );
+    }
+
+    return const EmptySection(
+      icon: Icons.auto_awesome_outlined,
+      message: 'Nothing organized yet',
     );
   }
 }
@@ -398,26 +578,37 @@ class _FolderOptionState extends State<_FolderOption> {
 /// Says which folder the tree below is rooted at, and offers the way back to
 /// the folder choice.
 class _BrowsingBar extends StatelessWidget {
-  const _BrowsingBar({required this.path, required this.onChange});
+  const _BrowsingBar({
+    required this.path,
+    required this.onChange,
+    required this.onLibrary,
+  });
 
   final String path;
   final VoidCallback? onChange;
 
+  /// Back to the organized view, which is where the section starts.
+  final VoidCallback onLibrary;
+
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.fromLTRB(32, 12, 24, 12),
+      padding: const EdgeInsets.fromLTRB(28, 12, 24, 12),
       decoration: const BoxDecoration(
         border: Border(bottom: BorderSide(color: KandooColors.divider)),
       ),
       child: Row(
         children: [
-          const Icon(
-            Icons.subdirectory_arrow_right,
-            size: 15,
-            color: KandooColors.textMuted,
+          TextButton.icon(
+            onPressed: onLibrary,
+            icon: const Icon(Icons.chevron_left, size: 17),
+            label: const Text('Library', style: TextStyle(fontSize: 12.5)),
+            style: TextButton.styleFrom(
+              foregroundColor: KandooColors.textSecondary,
+              visualDensity: VisualDensity.compact,
+            ),
           ),
-          const SizedBox(width: 9),
+          const SizedBox(width: 6),
           Expanded(
             child: Text(
               path,

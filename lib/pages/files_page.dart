@@ -12,11 +12,29 @@ import '../widgets/tree_viewer.dart';
 /// connected and scoped, but their APIs are not wired up yet.
 const Set<String> kBrowsableSources = {'file_system'};
 
+/// Builds the loader that browses [source] from [root]. Called only for the
+/// sources in [kBrowsableSources].
+typedef SourceTreeLoader =
+    TreeChildrenLoader Function(SourceDescriptor source, String root);
+
+/// Everything browsable today lives on this Mac. Drive and the rest will pick
+/// their loader off [source] once their APIs are built.
+TreeChildrenLoader defaultTreeLoader(SourceDescriptor source, String root) =>
+    FileSystemBrowser(rootPath: root).children;
+
 /// The Files section: pick a connected source, then browse it.
 class FilesPage extends StatefulWidget {
-  const FilesPage({super.key, required this.connections});
+  const FilesPage({
+    super.key,
+    required this.connections,
+    this.treeLoader = defaultTreeLoader,
+  });
 
   final ConnectionsController connections;
+
+  /// Where the tree's rows come from. Overridden in tests, which cannot wait
+  /// on real disk reads.
+  final SourceTreeLoader treeLoader;
 
   @override
   State<FilesPage> createState() => _FilesPageState();
@@ -136,7 +154,7 @@ class _FilesPageState extends State<FilesPage> {
             // Rooting the tree somewhere new starts it from scratch, rather
             // than inheriting the previous folder's expansions.
             key: ValueKey('${source.id}:$root'),
-            loadChildren: FileSystemBrowser(rootPath: root).children,
+            loadChildren: widget.treeLoader(source, root),
           ),
         ),
       ],

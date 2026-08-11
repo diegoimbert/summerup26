@@ -10,5 +10,20 @@
 	<!-- Receiving the OAuth redirect on a loopback listener. -->
 	<key>com.apple.security.network.server</key>
 	<true/>
+	<!--
+		Browsing the folders the user typed into the File System source. They are
+		entered as paths rather than picked through an open panel, so the sandbox
+		grants nothing on its own and every read is refused without this.
+
+		A temporary exception is what makes typed paths work at all; it is also
+		what the App Store refuses, so shipping there means moving folder choice
+		to NSOpenPanel and holding security-scoped bookmarks instead.
+	-->
+	<key>com.apple.security.files.user-selected.read-only</key>
+	<true/>
+	<key>com.apple.security.temporary-exception.files.absolute-path.read-only</key>
+	<array>
+		<string>/</string>
+	</array>
 </dict>
 </plist>

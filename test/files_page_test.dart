@@ -1,10 +1,9 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:overlay_app/pages/files_page.dart';
 import 'package:overlay_app/sources/connections.dart';
 import 'package:overlay_app/sources/credential_store.dart';
+import 'package:overlay_app/sources/source_catalog.dart';
 import 'package:overlay_app/theme.dart';
 import 'package:overlay_app/widgets/tree_viewer.dart';
 
@@ -29,18 +28,31 @@ SourceCredentials _connected(String sourceId) => SourceCredentials(
   accountLabel: 'diego@windmill.dev',
 );
 
-/// Lets a directory listing land. Widget tests run in fake async, where real
-/// file I/O only completes inside [WidgetTester.runAsync], so a plain
-/// pumpAndSettle would spin on the tree's loading indicator forever.
-Future<void> _settleTree(WidgetTester tester) async {
-  await tester.pump();
-  await tester.runAsync(
-    () => Future<void>.delayed(const Duration(milliseconds: 200)),
-  );
-  await tester.pumpAndSettle();
+/// Stands in for the disk. Real file reads never complete inside the fake async
+/// zone a widget test runs in, so the page is handed a tree it can resolve
+/// without leaving that zone; [FileSystemBrowser] is covered against real
+/// directories in tree_viewer_test.dart.
+class _FakeTree {
+  final List<String> roots = [];
+
+  TreeChildrenLoader loaderFor(SourceDescriptor source, String root) {
+    return (parent) async {
+      // Recorded on the read rather than on the build, so a rebuild of the
+      // page does not look like a second visit to the folder.
+      if (parent == null) roots.add(root);
+
+      return switch (parent) {
+        null => [
+          TreeEntry(id: '$root/Invoices', label: 'Invoices', isFolder: true),
+          TreeEntry(id: '$root/todo.md', label: 'todo.md'),
+        ],
+        _ => [TreeEntry(id: '${parent.id}/march.pdf', label: 'march.pdf')],
+      };
+    };
+  }
 }
 
-Future<void> _pumpFiles(WidgetTester tester, CredentialStore store) async {
+Future<_FakeTree> _pumpFiles(WidgetTester tester, CredentialStore store) async {
   tester.view.physicalSize = const Size(1400, 1600);
   tester.view.devicePixelRatio = 2.0;
   addTearDown(tester.view.reset);
@@ -48,27 +60,20 @@ Future<void> _pumpFiles(WidgetTester tester, CredentialStore store) async {
   final connections = ConnectionsController(store: store);
   await connections.load();
 
+  final tree = _FakeTree();
   await tester.pumpWidget(
     MaterialApp(
       theme: buildKandooTheme(),
-      home: Scaffold(body: FilesPage(connections: connections)),
+      home: Scaffold(
+        body: FilesPage(connections: connections, treeLoader: tree.loaderFor),
+      ),
     ),
   );
   await tester.pumpAndSettle();
+  return tree;
 }
 
 void main() {
-  late Directory root;
-
-  setUp(() async {
-    root = await Directory.systemTemp.createTemp('kandoo_files_');
-    await Directory('${root.path}/Invoices').create();
-    await File('${root.path}/Invoices/march.pdf').writeAsString('pdf');
-    await File('${root.path}/todo.md').writeAsString('todo');
-  });
-
-  tearDown(() => root.delete(recursive: true));
-
   testWidgets('the grid holds the connected sources, and only those', (
     tester,
   ) async {
@@ -90,27 +95,29 @@ void main() {
   testWidgets('one configured folder goes straight to the tree', (
     tester,
   ) async {
-    await _pumpFiles(
+    final tree = await _pumpFiles(
       tester,
       _MemoryStore(
         folders: {
-          'file_system': [root.path],
+          'file_system': ['/Users/diegoimbert/Desktop'],
         },
       ),
     );
 
     await tester.tap(find.text('File System'));
-    await _settleTree(tester);
+    await tester.pumpAndSettle();
 
     expect(find.text('Which File System folder?'), findsNothing);
-    expect(find.text(root.path), findsOneWidget);
-    // Folders first, and collapsed until they are opened.
+    expect(tree.roots, ['/Users/diegoimbert/Desktop']);
+    expect(find.text('/Users/diegoimbert/Desktop'), findsOneWidget);
+
+    // Folders come first, and stay closed until they are opened.
     expect(find.text('Invoices'), findsOneWidget);
     expect(find.text('todo.md'), findsOneWidget);
     expect(find.text('march.pdf'), findsNothing);
 
     await tester.tap(find.text('Invoices'));
-    await _settleTree(tester);
+    await tester.pumpAndSettle();
     expect(find.text('march.pdf'), findsOneWidget);
 
     // With nothing to choose between, there is no way back to a choice.
@@ -118,13 +125,14 @@ void main() {
   });
 
   testWidgets('several folders are chosen between first', (tester) async {
-    final other = await Directory('${root.path}/Invoices').create();
-
-    await _pumpFiles(
+    final tree = await _pumpFiles(
       tester,
       _MemoryStore(
         folders: {
-          'file_system': [root.path, other.path],
+          'file_system': [
+            '/Users/diegoimbert/Desktop',
+            '/Users/diegoimbert/Code',
+          ],
         },
       ),
     );
@@ -134,12 +142,15 @@ void main() {
 
     expect(find.text('Which File System folder?'), findsOneWidget);
     expect(find.byType(TreeViewer), findsNothing);
+    // Nothing is read until the user has said where to look.
+    expect(tree.roots, isEmpty);
 
-    await tester.tap(find.text(other.path));
-    await _settleTree(tester);
+    await tester.tap(find.text('/Users/diegoimbert/Code'));
+    await tester.pumpAndSettle();
 
     expect(find.byType(TreeViewer), findsOneWidget);
-    expect(find.text('march.pdf'), findsOneWidget);
+    expect(tree.roots, ['/Users/diegoimbert/Code']);
+    expect(find.text('Invoices'), findsOneWidget);
 
     // And back again, since there was a choice to make.
     await tester.tap(find.text('Change folder'));
@@ -148,18 +159,18 @@ void main() {
   });
 
   testWidgets('no configured folders browses from the root', (tester) async {
-    await _pumpFiles(tester, _MemoryStore());
+    final tree = await _pumpFiles(tester, _MemoryStore());
 
     await tester.tap(find.text('File System'));
-    await _settleTree(tester);
+    await tester.pumpAndSettle();
 
     expect(find.text('Which File System folder?'), findsNothing);
-    expect(find.text('/'), findsOneWidget);
+    expect(tree.roots, ['/']);
     expect(find.byType(TreeViewer), findsOneWidget);
   });
 
   testWidgets('a source without a browser yet says so', (tester) async {
-    await _pumpFiles(
+    final tree = await _pumpFiles(
       tester,
       _MemoryStore(connections: {'notion': _connected('notion')}),
     );
@@ -169,5 +180,6 @@ void main() {
 
     expect(find.text('Browsing Notion is not built yet'), findsOneWidget);
     expect(find.byType(TreeViewer), findsNothing);
+    expect(tree.roots, isEmpty);
   });
 }

@@ -1,5 +1,11 @@
 import 'package:flutter/material.dart';
 
+import 'pages/chat_page.dart';
+import 'pages/files_page.dart';
+import 'pages/patterns_page.dart';
+import 'pages/sources_page.dart';
+import 'pages/today_page.dart';
+import 'sources/connections.dart';
 import 'theme.dart';
 
 /// Runs the main application window.
@@ -45,7 +51,26 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
+  /// Shared across sections so connection state survives navigation.
+  final ConnectionsController _connections = ConnectionsController();
+
   int _selectedIndex = 0;
+
+  @override
+  void dispose() {
+    _connections.dispose();
+    super.dispose();
+  }
+
+  Widget _bodyFor(int index) {
+    return switch (index) {
+      0 => const TodayPage(),
+      1 => const ChatPage(),
+      2 => const FilesPage(),
+      3 => SourcesPage(connections: _connections),
+      _ => const PatternsPage(),
+    };
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -57,8 +82,13 @@ class _HomePageState extends State<HomePage> {
             selectedIndex: _selectedIndex,
             onSelected: (index) => setState(() => _selectedIndex = index),
           ),
-          // Content area, intentionally empty for now.
-          const Expanded(child: SizedBox.expand()),
+          Expanded(
+            // Keyed so each section rebuilds its own state cleanly on switch.
+            child: KeyedSubtree(
+              key: ValueKey(_selectedIndex),
+              child: _bodyFor(_selectedIndex),
+            ),
+          ),
         ],
       ),
     );

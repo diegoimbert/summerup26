@@ -10,10 +10,22 @@ abstract final class KandooColors {
 
   static const Color accent = Color(0xFFF86523);
 
+  /// Darker burnt orange for accent-coloured *text*, which is unreadable at the
+  /// bright brand orange on a near-white background. Matches how getkandoo.app
+  /// separates its brand fill from its accent text.
+  static const Color accentDeep = Color(0xFFA14A18);
+
   static const Color textPrimary = Color(0xFF1F1D1B);
   static const Color textSecondary = Color(0xFF6B6560);
+  static const Color textMuted = Color(0xFF918C82);
+
+  /// Cards and inputs sitting on top of the page background.
+  static const Color surface = Color(0xFFFFFFFF);
 
   static const Color divider = Color(0xFFE9E5E1);
+
+  /// Borders that need to read on hover or against white cards.
+  static const Color lineStrong = Color(0xFFD8D2CA);
 
   /// Fill behind the selected side menu item.
   static const Color selectedFill = Color(0x1AF86523);

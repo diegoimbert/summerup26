@@ -4,5 +4,11 @@
 <dict>
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
+	<!-- Reaching the providers' OAuth token endpoints. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<!-- Receiving the OAuth redirect on a loopback listener. -->
+	<key>com.apple.security.network.server</key>
+	<true/>
 </dict>
 </plist>

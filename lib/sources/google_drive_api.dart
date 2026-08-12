@@ -29,11 +29,16 @@ class DriveFileInfo {
     required this.name,
     required this.mimeType,
     this.size,
+    this.parents = const [],
   });
 
   final String id;
   final String name;
   final String mimeType;
+
+  /// The folders the item is in. Drive lets a file have several; moving one
+  /// means saying which to take it out of as well as which to put it in.
+  final List<String> parents;
 
   /// Bytes, when Drive reports any. A Google Doc has no size of its own.
   final int? size;
@@ -143,7 +148,7 @@ class GoogleDriveApi {
   /// What Drive holds about one item.
   Future<DriveFileInfo> info(String id) async {
     final body = await _get({
-      'fields': 'id, name, mimeType, size',
+      'fields': 'id, name, mimeType, size, parents',
     }, path: id);
 
     return DriveFileInfo(
@@ -151,6 +156,85 @@ class GoogleDriveApi {
       name: body['name'] as String? ?? 'Untitled',
       mimeType: body['mimeType'] as String? ?? '',
       size: int.tryParse('${body['size']}'),
+      parents: [
+        for (final parent in (body['parents'] as List? ?? const []))
+          '$parent',
+      ],
+    );
+  }
+
+  /// The id of the folder at [path], making any part of it that is missing.
+  ///
+  /// Filing a drive means putting files in folders that do not exist yet, so
+  /// the walk that [resolveFolder] does is repeated here with a folder created
+  /// wherever it runs out.
+  Future<String> ensureFolder(String path) async {
+    var parent = rootId;
+
+    for (final segment in normalisePath(path).split('/')) {
+      if (segment.isEmpty) continue;
+
+      final body = await _get({
+        'q':
+            "'$parent' in parents and trashed = false "
+            "and mimeType = '$folderMimeType' and name = '${_escape(segment)}'",
+        'fields': 'files(id)',
+        'pageSize': '1',
+        'spaces': 'drive',
+      });
+
+      final files = body['files'] as List? ?? const [];
+      final existing = files.isEmpty
+          ? null
+          : ((files.first as Map)['id']) as String?;
+
+      parent = existing ?? await createFolder(name: segment, parentId: parent);
+    }
+
+    return parent;
+  }
+
+  /// Makes a folder, and says what Drive called it.
+  Future<String> createFolder({
+    required String name,
+    required String parentId,
+  }) async {
+    final body = await _post(_endpoint.replace(queryParameters: {
+      'fields': 'id',
+    }), {
+      'name': name,
+      'mimeType': folderMimeType,
+      'parents': [parentId],
+    });
+
+    final id = body['id'] as String?;
+    if (id == null) {
+      throw const DriveException('Google Drive made no folder.');
+    }
+    return id;
+  }
+
+  /// Renames [id] and puts it in [parentId], taking it out of [removeParents].
+  Future<void> moveFile(
+    String id, {
+    required String name,
+    required String parentId,
+    List<String> removeParents = const [],
+  }) async {
+    // Drive refuses a request that adds and removes the same parent, which is
+    // what a rename in place would otherwise send.
+    final leaving = removeParents.where((parent) => parent != parentId);
+
+    await _patch(
+      _endpoint.replace(
+        path: '${_endpoint.path}/$id',
+        queryParameters: {
+          'addParents': parentId,
+          if (leaving.isNotEmpty) 'removeParents': leaving.join(','),
+          'fields': 'id',
+        },
+      ),
+      {'name': name},
     );
   }
 
@@ -205,6 +289,42 @@ class GoogleDriveApi {
           .cast<String, dynamic>();
     } on DriveException {
       rethrow;
+    } catch (_) {
+      throw const DriveException('Google Drive returned something unreadable.');
+    }
+  }
+
+  Future<Map<String, dynamic>> _post(Uri url, Map<String, dynamic> body) =>
+      _write('POST', url, body);
+
+  Future<Map<String, dynamic>> _patch(Uri url, Map<String, dynamic> body) =>
+      _write('PATCH', url, body);
+
+  /// One call that changes something in the drive.
+  Future<Map<String, dynamic>> _write(
+    String method,
+    Uri url,
+    Map<String, dynamic> body,
+  ) async {
+    final request = http.Request(method, url)
+      ..headers.addAll({
+        'Authorization': 'Bearer $accessToken',
+        'Content-Type': 'application/json',
+      })
+      ..body = jsonEncode(body);
+
+    final http.Response response;
+    try {
+      response = await http.Response.fromStream(await _client.send(request));
+    } catch (error) {
+      throw DriveException('Could not reach Google Drive: $error');
+    }
+
+    if (response.statusCode != 200) throw DriveException(_failureFor(response));
+
+    try {
+      return (jsonDecode(utf8.decode(response.bodyBytes)) as Map)
+          .cast<String, dynamic>();
     } catch (_) {
       throw const DriveException('Google Drive returned something unreadable.');
     }

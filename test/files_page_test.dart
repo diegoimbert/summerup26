@@ -214,7 +214,7 @@ void main() {
     expect(find.text('Nothing scanned yet.'), findsOneWidget);
   });
 
-  testWidgets('picking the open source again returns to the library', (
+  testWidgets('a source opens over the section, and closes back onto it', (
     tester,
   ) async {
     await _pumpFiles(
@@ -228,12 +228,18 @@ void main() {
 
     await tester.tap(find.byTooltip('File System'));
     await tester.pumpAndSettle();
-    expect(find.byType(TreeViewer), findsOneWidget);
 
-    await tester.tap(find.text('Library'));
+    // The sheet is over the library rather than instead of it: the section
+    // underneath is still the section.
+    expect(find.byType(TreeViewer), findsOneWidget);
+    expect(find.text('Auto-organize'), findsOneWidget);
+    expect(find.text('Nothing organized yet'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Close'));
     await tester.pumpAndSettle();
 
     expect(find.byType(TreeViewer), findsNothing);
+    expect(find.text('Auto-organize'), findsNothing);
     expect(find.text('Nothing organized yet'), findsOneWidget);
   });
 
@@ -252,9 +258,7 @@ void main() {
     await tester.tap(find.byTooltip('File System'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Which folder?'), findsNothing);
     expect(tree.roots, ['/Users/diegoimbert/Desktop']);
-    expect(find.text('/Users/diegoimbert/Desktop'), findsOneWidget);
 
     // Folders come first, and stay closed until they are opened.
     expect(find.text('Invoices'), findsOneWidget);
@@ -265,8 +269,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('march.pdf'), findsOneWidget);
 
-    // With nothing to choose between, there is no way back to a choice.
-    expect(find.text('Change folder'), findsNothing);
+    // With nothing to choose between, no choice is offered.
+    expect(find.text('/Users/diegoimbert/Desktop'), findsNothing);
   });
 
   testWidgets('double-clicking a file opens it', (tester) async {
@@ -483,29 +487,9 @@ void main() {
     expect(find.text('Show in Finder'), findsNothing);
   });
 
-  testWidgets('searching steps out of a source being browsed', (tester) async {
-    await _pumpFiles(
-      tester,
-      _MemoryStore(
-        folders: {
-          'file_system': ['/Users/diegoimbert/Desktop'],
-        },
-      ),
-    );
-
-    await tester.tap(find.byTooltip('File System'));
-    await tester.pumpAndSettle();
-    expect(find.text('todo.md'), findsOneWidget);
-
-    await tester.enterText(find.byType(TextField), 'todo');
-    await tester.pumpAndSettle();
-
-    // The raw tree is gone: a search is a search of the library.
-    expect(find.text('todo.md'), findsNothing);
-    expect(find.text('No files match that search'), findsOneWidget);
-  });
-
-  testWidgets('several folders are chosen between first', (tester) async {
+  testWidgets('several folders are offered at the top of the sheet', (
+    tester,
+  ) async {
     final tree = await _pumpFiles(
       tester,
       _MemoryStore(
@@ -521,22 +505,16 @@ void main() {
     await tester.tap(find.byTooltip('File System'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Which folder?'), findsOneWidget);
-    expect(find.byType(TreeViewer), findsNothing);
-    // Nothing is read until the user has said where to look.
-    expect(tree.roots, isEmpty);
+    // The first folder roots the tree, and the others are one tap away rather
+    // than a step of their own.
+    expect(tree.roots, ['/Users/diegoimbert/Desktop']);
+    expect(find.text('/Users/diegoimbert/Code'), findsOneWidget);
 
     await tester.tap(find.text('/Users/diegoimbert/Code'));
     await tester.pumpAndSettle();
 
-    expect(find.byType(TreeViewer), findsOneWidget);
-    expect(tree.roots, ['/Users/diegoimbert/Code']);
+    expect(tree.roots, ['/Users/diegoimbert/Desktop', '/Users/diegoimbert/Code']);
     expect(find.text('Invoices'), findsOneWidget);
-
-    // And back again, since there was a choice to make.
-    await tester.tap(find.text('Change folder'));
-    await tester.pumpAndSettle();
-    expect(find.text('Which folder?'), findsOneWidget);
   });
 
   testWidgets('no configured folders browses from the root', (tester) async {
@@ -545,7 +523,6 @@ void main() {
     await tester.tap(find.byTooltip('File System'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Which folder?'), findsNothing);
     expect(tree.roots, ['/']);
     expect(find.byType(TreeViewer), findsOneWidget);
   });

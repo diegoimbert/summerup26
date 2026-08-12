@@ -4,7 +4,11 @@ import 'package:flutter/services.dart';
 import '../library/library_controller.dart';
 import '../library/library_store.dart';
 import '../library/library_tree.dart';
+import '../organize/drive_organizer.dart';
+import '../organize/file_system_organizer.dart';
+import '../organize/source_organizer.dart';
 import '../sources/connections.dart';
+import '../sources/drive_access.dart';
 import '../sources/file_system_browser.dart';
 import '../sources/google_drive_api.dart';
 import '../sources/google_drive_browser.dart';
@@ -15,6 +19,7 @@ import '../widgets/page_shell.dart';
 import '../widgets/search_field.dart';
 import '../widgets/source_logo.dart';
 import '../widgets/tree_viewer.dart';
+import 'source_browser_dialog.dart';
 
 /// The sources whose contents Kandoo can actually list today. The rest are
 /// connected and scoped, but their APIs are not wired up yet.
@@ -69,6 +74,7 @@ class FilesPage extends StatefulWidget {
     required this.onOpenSources,
     this.treeLoader = defaultTreeLoader,
     this.openUrl = openWithSystem,
+    this.organizers,
   });
 
   final ConnectionsController connections;
@@ -86,20 +92,29 @@ class FilesPage extends StatefulWidget {
   /// wait on real disk reads.
   final SourceTreeLoader treeLoader;
 
+  /// How a file is moved into place on its source. Replaced in tests, which
+  /// have no disk to move anything on.
+  final SourceOrganizers? organizers;
+
   @override
   State<FilesPage> createState() => _FilesPageState();
 }
 
 class _FilesPageState extends State<FilesPage> {
+  /// The source whose own tree is open over the section, if any. Kept so its
+  /// tile stays lit while the sheet is up.
   SourceDescriptor? _source;
 
   /// What the user is looking for. A search is always of the library: a source
   /// browsed as it really is would have to be walked to be searched.
   String _query = '';
 
-  /// The folder the tree is rooted at. Null while the user still has a choice
-  /// to make between the folders configured for [_source].
-  String? _root;
+  late final SourceOrganizers _organizers =
+      widget.organizers ??
+      SourceOrganizers([
+        const FileSystemOrganizer(),
+        GoogleDriveOrganizer(api: driveApiFor(widget.connections)),
+      ]);
 
   @override
   void initState() {
@@ -117,17 +132,7 @@ class _FilesPageState extends State<FilesPage> {
       )
       .toList();
 
-  void _search(String query) {
-    setState(() {
-      _query = query;
-      // Looking for something means looking in the library, so a source being
-      // browsed steps aside.
-      if (query.trim().isNotEmpty) {
-        _source = null;
-        _root = null;
-      }
-    });
-  }
+  void _search(String query) => setState(() => _query = query);
 
   /// The filed away files matching the search, if there is one.
   List<LibraryEntry> get _matches {
@@ -143,29 +148,26 @@ class _FilesPageState extends State<FilesPage> {
     ];
   }
 
-  /// Opens a source's own tree, or returns to the library when the source
-  /// already showing is tapped again.
-  void _select(SourceDescriptor source) {
-    if (_source?.id == source.id) {
-      setState(() {
-        _source = null;
-        _root = null;
-      });
-      return;
-    }
+  /// Opens a source's own tree over the section.
+  ///
+  /// Over rather than instead of: the library is what the Files section is,
+  /// and a source as it really is a place the user visits and comes back from.
+  Future<void> _select(SourceDescriptor source) async {
+    setState(() => _source = source);
 
-    final folders = widget.connections.foldersFor(source.id);
+    await showSourceBrowser(
+      context,
+      source: source,
+      connections: widget.connections,
+      library: widget.library,
+      organizers: _organizers,
+      browsable: kBrowsableSources.contains(source.id),
+      loaderFor: (root) =>
+          widget.treeLoader(source, root, widget.connections),
+      openUrl: widget.openUrl,
+    );
 
-    setState(() {
-      _source = source;
-      // One folder is no choice at all, and no folders means the source was
-      // never narrowed — so both go straight to the tree.
-      _root = switch (folders.length) {
-        0 => '/',
-        1 => folders.single,
-        _ => null,
-      };
-    });
+    if (mounted) setState(() => _source = null);
   }
 
   /// What the search turned up, as a flat list: a result is worth showing
@@ -217,48 +219,6 @@ class _FilesPageState extends State<FilesPage> {
         width: 320,
       ),
     );
-  }
-
-  /// What a row of a source's own tree offers.
-  ///
-  /// The file system has files to open and folders to show; Drive has neither
-  /// on this Mac, so its rows lead to the browser instead.
-  List<TreeAction> _sourceActions(SourceDescriptor source, TreeEntry entry) {
-    if (source.id == 'google_drive') {
-      final url = driveItemUrl(entry.id, isFolder: entry.isFolder);
-      return [
-        TreeAction(
-          label: 'Open in Drive',
-          icon: Icons.open_in_new,
-          onSelected: () => _open(url, what: entry.label),
-        ),
-        TreeAction(
-          label: 'Copy link',
-          icon: Icons.link,
-          onSelected: () => _copy('$url', what: 'Link'),
-        ),
-      ];
-    }
-
-    return [
-      if (!entry.isFolder)
-        TreeAction(
-          label: 'Open',
-          icon: Icons.open_in_new,
-          onSelected: () => _open(localFileUrl(entry.id), what: entry.label),
-        ),
-      TreeAction(
-        label: 'Show in Finder',
-        icon: Icons.folder_open_outlined,
-        onSelected: () =>
-            _open(enclosingFolderUrl(entry.id), what: 'that folder'),
-      ),
-      TreeAction(
-        label: 'Copy path',
-        icon: Icons.content_copy,
-        onSelected: () => _copy(entry.id, what: 'Path'),
-      ),
-    ];
   }
 
   /// What a row of the organized library offers.
@@ -329,7 +289,6 @@ class _FilesPageState extends State<FilesPage> {
         final selected = _source;
         if (selected != null && !sources.any((s) => s.id == selected.id)) {
           _source = null;
-          _root = null;
         }
 
         return PageShell(
@@ -367,70 +326,18 @@ class _FilesPageState extends State<FilesPage> {
     );
   }
 
+  /// The section's body, which is the library — or what a search of it turned
+  /// up. A source's own tree is a sheet over the top, not a body of its own.
   Widget _body() {
     if (_query.trim().isNotEmpty) return _results();
 
-    final source = _source;
-    // Nothing picked out of the grid means the organized library, which is the
-    // point of the section.
-    if (source == null) {
-      return _LibraryView(
-        library: widget.library,
-        onActivate: (entry) {
-          final held = entry.payload;
-          if (held is LibraryEntry) _open(_urlFor(held), what: held.title);
-        },
-        actionsFor: _libraryActions,
-      );
-    }
-
-    if (!kBrowsableSources.contains(source.id)) {
-      return EmptySection(
-        icon: Icons.hourglass_empty,
-        message: 'Browsing ${source.name} is not built yet',
-      );
-    }
-
-    final folders = widget.connections.foldersFor(source.id);
-    final root = _root;
-    if (root == null) {
-      return _FolderChoice(
-        source: source,
-        folders: folders,
-        onChosen: (folder) => setState(() => _root = folder),
-      );
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _BrowsingBar(
-          path: root,
-          // Backing out only means something when there was a choice.
-          onChange: folders.length > 1
-              ? () => setState(() => _root = null)
-              : null,
-          onLibrary: () => setState(() {
-            _source = null;
-            _root = null;
-          }),
-        ),
-        Expanded(
-          child: TreeViewer(
-            // Rooting the tree somewhere new starts it from scratch, rather
-            // than inheriting the previous folder's expansions.
-            key: ValueKey('${source.id}:$root'),
-            loadChildren: widget.treeLoader(source, root, widget.connections),
-            onActivate: (entry) => _open(
-              source.id == 'google_drive'
-                  ? driveItemUrl(entry.id, isFolder: false)
-                  : localFileUrl(entry.id),
-              what: entry.label,
-            ),
-            actionsFor: (entry) => _sourceActions(source, entry),
-          ),
-        ),
-      ],
+    return _LibraryView(
+      library: widget.library,
+      onActivate: (entry) {
+        final held = entry.payload;
+        if (held is LibraryEntry) _open(_urlFor(held), what: held.title);
+      },
+      actionsFor: _libraryActions,
     );
   }
 }
@@ -759,179 +666,6 @@ class _IntegrationButtonState extends State<_IntegrationButton> {
             child: SourceLogo(source: widget.source, size: 40),
           ),
         ),
-      ),
-    );
-  }
-}
-
-/// The step between picking a source and seeing its tree, for a source that
-/// was narrowed to more than one folder.
-class _FolderChoice extends StatelessWidget {
-  const _FolderChoice({
-    required this.source,
-    required this.folders,
-    required this.onChosen,
-  });
-
-  final SourceDescriptor source;
-  final List<String> folders;
-  final ValueChanged<String> onChosen;
-
-  @override
-  Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(32, 22, 32, 32),
-      children: [
-        Row(
-          children: [
-            // The mark says which source this is; the heading only has to ask
-            // the question.
-            SourceLogo(source: source, size: 24),
-            const SizedBox(width: 10),
-            const Text(
-              'Which folder?',
-              style: TextStyle(
-                fontFamily: KandooFonts.heading,
-                fontSize: 15,
-                fontWeight: FontWeight.w500,
-                color: KandooColors.textPrimary,
-                letterSpacing: -0.2,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 14),
-        for (final folder in folders)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: _FolderOption(folder: folder, onTap: () => onChosen(folder)),
-          ),
-      ],
-    );
-  }
-}
-
-class _FolderOption extends StatefulWidget {
-  const _FolderOption({required this.folder, required this.onTap});
-
-  final String folder;
-  final VoidCallback onTap;
-
-  @override
-  State<_FolderOption> createState() => _FolderOptionState();
-}
-
-class _FolderOptionState extends State<_FolderOption> {
-  bool _hovered = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 120),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
-          decoration: BoxDecoration(
-            color: KandooColors.surface,
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-              color: _hovered ? KandooColors.lineStrong : KandooColors.divider,
-            ),
-          ),
-          child: Row(
-            children: [
-              const Icon(
-                Icons.folder_outlined,
-                size: 16,
-                color: KandooColors.accentDeep,
-              ),
-              const SizedBox(width: 11),
-              Expanded(
-                child: Text(
-                  widget.folder,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontFamily: KandooFonts.mono,
-                    fontSize: 12,
-                    color: KandooColors.textPrimary,
-                  ),
-                ),
-              ),
-              const Icon(
-                Icons.chevron_right,
-                size: 17,
-                color: KandooColors.textMuted,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// Says which folder the tree below is rooted at, and offers the way back to
-/// the folder choice.
-class _BrowsingBar extends StatelessWidget {
-  const _BrowsingBar({
-    required this.path,
-    required this.onChange,
-    required this.onLibrary,
-  });
-
-  final String path;
-  final VoidCallback? onChange;
-
-  /// Back to the organized view, which is where the section starts.
-  final VoidCallback onLibrary;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(28, 12, 24, 12),
-      decoration: const BoxDecoration(
-        border: Border(bottom: BorderSide(color: KandooColors.divider)),
-      ),
-      child: Row(
-        children: [
-          TextButton.icon(
-            onPressed: onLibrary,
-            icon: const Icon(Icons.chevron_left, size: 17),
-            label: const Text('Library', style: TextStyle(fontSize: 12.5)),
-            style: TextButton.styleFrom(
-              foregroundColor: KandooColors.textSecondary,
-              visualDensity: VisualDensity.compact,
-            ),
-          ),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Text(
-              path,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontFamily: KandooFonts.mono,
-                fontSize: 12,
-                color: KandooColors.textSecondary,
-              ),
-            ),
-          ),
-          if (onChange != null)
-            TextButton(
-              onPressed: onChange,
-              style: TextButton.styleFrom(
-                foregroundColor: KandooColors.accentDeep,
-                visualDensity: VisualDensity.compact,
-              ),
-              child: const Text(
-                'Change folder',
-                style: TextStyle(fontSize: 12.5),
-              ),
-            ),
-        ],
       ),
     );
   }

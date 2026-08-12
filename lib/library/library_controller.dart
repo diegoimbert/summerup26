@@ -538,6 +538,24 @@ class LibraryController extends ChangeNotifier {
     }
   }
 
+  /// Records files that have been moved on their source, so the library points
+  /// at where they are now.
+  ///
+  /// Keyed by the identity each file had before it moved — a path on this Mac,
+  /// which is exactly what a move changes. Called after Auto-organize has put
+  /// files where the library said they should be; doing it at once matters, as
+  /// the watcher is about to see the same move and would otherwise read it as a
+  /// file disappearing and a stranger arriving.
+  Future<void> filesMoved(Map<String, LibraryEntry> moved) async {
+    if (moved.isEmpty) return;
+
+    final entries = [
+      for (final entry in _entries) moved[entry.file.identity] ?? entry,
+    ];
+
+    await _commit(entries);
+  }
+
   /// Stores a changed library and puts it on screen.
   Future<void> _commit(List<LibraryEntry> entries) async {
     final files = [for (final entry in entries) entry.file];

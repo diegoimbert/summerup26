@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../library/library_controller.dart';
 import '../library/library_store.dart';
+import '../library/library_tree.dart';
 import '../sources/connections.dart';
 import '../sources/file_system_browser.dart';
 import '../sources/google_drive_api.dart';
@@ -11,6 +12,7 @@ import '../sources/item_actions.dart';
 import '../sources/source_catalog.dart';
 import '../theme.dart';
 import '../widgets/page_shell.dart';
+import '../widgets/search_field.dart';
 import '../widgets/source_logo.dart';
 import '../widgets/tree_viewer.dart';
 
@@ -64,12 +66,17 @@ class FilesPage extends StatefulWidget {
     super.key,
     required this.connections,
     required this.library,
+    required this.onOpenSources,
     this.treeLoader = defaultTreeLoader,
     this.openUrl = openWithSystem,
   });
 
   final ConnectionsController connections;
   final LibraryController library;
+
+  /// Takes the user to Sources, which is where sources are connected and
+  /// pointed at folders.
+  final VoidCallback onOpenSources;
 
   /// How a file or a link is handed to the desktop. Replaced in tests, which
   /// have no desktop.
@@ -85,6 +92,10 @@ class FilesPage extends StatefulWidget {
 
 class _FilesPageState extends State<FilesPage> {
   SourceDescriptor? _source;
+
+  /// What the user is looking for. A search is always of the library: a source
+  /// browsed as it really is would have to be walked to be searched.
+  String _query = '';
 
   /// The folder the tree is rooted at. Null while the user still has a choice
   /// to make between the folders configured for [_source].
@@ -105,6 +116,32 @@ class _FilesPageState extends State<FilesPage> {
             (!source.needsSignIn || widget.connections.isConnected(source.id)),
       )
       .toList();
+
+  void _search(String query) {
+    setState(() {
+      _query = query;
+      // Looking for something means looking in the library, so a source being
+      // browsed steps aside.
+      if (query.trim().isNotEmpty) {
+        _source = null;
+        _root = null;
+      }
+    });
+  }
+
+  /// The filed away files matching the search, if there is one.
+  List<LibraryEntry> get _matches {
+    final query = _query.trim().toLowerCase();
+    if (query.isEmpty) return const [];
+
+    return [
+      for (final entry in widget.library.entries)
+        if (entry.title.toLowerCase().contains(query) ||
+            entry.organizedPath.toLowerCase().contains(query) ||
+            entry.file.path.toLowerCase().contains(query))
+          entry,
+    ];
+  }
 
   /// Opens a source's own tree, or returns to the library when the source
   /// already showing is tapped again.
@@ -129,6 +166,29 @@ class _FilesPageState extends State<FilesPage> {
         _ => null,
       };
     });
+  }
+
+  /// What the search turned up, as a flat list: a result is worth showing
+  /// where it was filed, not worth burying in the folder it was filed into.
+  Widget _results() {
+    final matches = _matches;
+    if (matches.isEmpty) {
+      return const EmptySection(
+        icon: Icons.search_off,
+        message: 'No files match that search',
+      );
+    }
+
+    final rows = LibraryTree.resultsFor(matches);
+    return TreeViewer(
+      key: ValueKey('search:${_query.trim()}:${widget.library.revision}'),
+      loadChildren: (parent) async => parent == null ? rows : const [],
+      onActivate: (entry) {
+        final held = entry.payload;
+        if (held is LibraryEntry) _open(_urlFor(held), what: held.title);
+      },
+      actionsFor: _libraryActions,
+    );
   }
 
   /// Opens what a row stands for: a local file in whatever handles it, a Drive
@@ -265,19 +325,33 @@ class _FilesPageState extends State<FilesPage> {
         }
 
         return PageShell(
-          title: 'Files',
-          subtitle: 'Everything Kandoo has gathered',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              // The sources are their own section, and the line under them
+              // says so: everything below is what they hold.
               _IntegrationGrid(
                 sources: sources,
                 selectedId: _source?.id,
                 onSelected: _select,
+                onAdd: widget.onOpenSources,
               ),
-              ScanStatusStrip(library: widget.library),
               const Divider(height: 1, color: KandooColors.divider),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(32, 16, 32, 14),
+                child: SizedBox(
+                  width: 320,
+                  child: SearchField(
+                    hintText: 'Search your files',
+                    onChanged: _search,
+                  ),
+                ),
+              ),
               Expanded(child: _body()),
+              const Divider(height: 1, color: KandooColors.divider),
+              // Out of the way at the foot of the section: it is a status, and
+              // the files are what the user came for.
+              ScanStatusStrip(library: widget.library),
             ],
           ),
         );
@@ -286,6 +360,8 @@ class _FilesPageState extends State<FilesPage> {
   }
 
   Widget _body() {
+    if (_query.trim().isNotEmpty) return _results();
+
     final source = _source;
     // Nothing picked out of the grid means the organized library, which is the
     // point of the section.
@@ -365,8 +441,8 @@ class ScanStatusStrip extends StatelessWidget {
   Widget build(BuildContext context) {
     final (message, isError) = _statusFor(library);
 
-    return Container(
-      padding: const EdgeInsets.fromLTRB(32, 0, 24, 16),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(32, 8, 26, 8),
       child: Row(
         children: [
           if (library.isBusy)
@@ -399,7 +475,11 @@ class ScanStatusStrip extends StatelessWidget {
               onPressed: () => library.refresh(force: true),
               style: TextButton.styleFrom(
                 foregroundColor: KandooColors.accentDeep,
-                visualDensity: VisualDensity.compact,
+                // A button that only has to be readable, not tappable with a
+                // thumb, so it takes the height of its own text.
+                minimumSize: Size.zero,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
               ),
               child: Text(
                 library.stage == LibraryStage.failed ? 'Try again' : 'Rescan',
@@ -528,59 +608,94 @@ class _LibraryView extends StatelessWidget {
   }
 }
 
-/// The connected sources, as a grid of icon buttons.
+/// The connected sources, as a grid of icon buttons, ending in the way to add
+/// another.
 class _IntegrationGrid extends StatelessWidget {
   const _IntegrationGrid({
     required this.sources,
     required this.selectedId,
     required this.onSelected,
+    required this.onAdd,
   });
 
   final List<SourceDescriptor> sources;
   final String? selectedId;
   final ValueChanged<SourceDescriptor> onSelected;
+  final VoidCallback onAdd;
 
   @override
   Widget build(BuildContext context) {
-    if (sources.isEmpty) {
-      return const Padding(
-        padding: EdgeInsets.fromLTRB(32, 0, 32, 24),
-        child: Text(
-          'No sources connected yet. Connect one from Sources.',
-          style: TextStyle(fontSize: 13, color: KandooColors.textSecondary),
-        ),
-      );
-    }
-
     return Padding(
-      padding: const EdgeInsets.fromLTRB(32, 0, 32, 22),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      padding: const EdgeInsets.fromLTRB(32, 4, 32, 14),
+      child: Wrap(
+        spacing: 10,
+        runSpacing: 10,
         children: [
-          const Text(
-            'Connected',
-            style: TextStyle(
-              fontFamily: KandooFonts.mono,
-              fontSize: 10.5,
-              fontWeight: FontWeight.w500,
-              letterSpacing: 0.6,
-              color: KandooColors.textMuted,
+          for (final source in sources)
+            _IntegrationButton(
+              source: source,
+              selected: source.id == selectedId,
+              onTap: () => onSelected(source),
+            ),
+          _AddSourceButton(onTap: onAdd),
+        ],
+      ),
+    );
+  }
+}
+
+/// The last tile in the grid: where sources come from.
+class _AddSourceButton extends StatefulWidget {
+  const _AddSourceButton({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  State<_AddSourceButton> createState() => _AddSourceButtonState();
+}
+
+class _AddSourceButtonState extends State<_AddSourceButton> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: Tooltip(
+          message: 'Connect a source',
+          waitDuration: const Duration(milliseconds: 400),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 120),
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: _hovered ? KandooColors.surface : Colors.transparent,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: _hovered ? KandooColors.lineStrong : Colors.transparent,
+              ),
+            ),
+            // Sized to match a brand mark exactly, so the row of tiles keeps
+            // its rhythm.
+            child: Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: KandooColors.hoverFill,
+                borderRadius: BorderRadius.circular(40 * 0.26),
+              ),
+              alignment: Alignment.center,
+              child: const Icon(
+                Icons.add,
+                size: 20,
+                color: KandooColors.textSecondary,
+              ),
             ),
           ),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            children: [
-              for (final source in sources)
-                _IntegrationButton(
-                  source: source,
-                  selected: source.id == selectedId,
-                  onTap: () => onSelected(source),
-                ),
-            ],
-          ),
-        ],
+        ),
       ),
     );
   }

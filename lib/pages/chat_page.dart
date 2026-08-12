@@ -9,8 +9,6 @@ class ChatPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return const PageShell(
-      title: 'Chat',
-      subtitle: 'Ask across everything you have connected',
       child: EmptySection(icon: Icons.chat_bubble_outline, message: 'No conversations yet'),
     );
   }

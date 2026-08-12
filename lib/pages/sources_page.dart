@@ -78,8 +78,6 @@ class _SourcesPageState extends State<SourcesPage> {
         final sources = _visibleSources;
 
         return PageShell(
-          title: 'Sources',
-          subtitle: 'Connect the places your work already lives.',
           toolbar: SizedBox(
             width: 320,
             child: SearchField(

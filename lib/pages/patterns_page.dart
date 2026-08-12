@@ -9,8 +9,6 @@ class PatternsPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return const PageShell(
-      title: 'Pattern recognized',
-      subtitle: 'Habits and themes Kandoo has noticed',
       child: EmptySection(icon: Icons.grid_view_outlined, message: 'No patterns yet'),
     );
   }

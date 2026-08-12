@@ -91,6 +91,21 @@ class LibraryTree {
     return LibraryTree._(children, entries.length);
   }
 
+  /// [entries] as a flat list of rows, for showing search results.
+  ///
+  /// A result says where it was filed rather than what folder it is in, since
+  /// there is no folder above it here to make that obvious.
+  static List<TreeEntry> resultsFor(List<LibraryEntry> entries) => [
+    for (final entry in entries)
+      TreeEntry(
+        id: 'file:${entry.file.identity}',
+        label: entry.title,
+        detail: entry.folders.join(' / '),
+        trailing: SourceMarks(sourceNames: [entry.file.sourceName]),
+        payload: entry,
+      ),
+  ];
+
   /// Rows under [parent], for [TreeViewer].
   Future<List<TreeEntry>> childrenOf(TreeEntry? parent) async =>
       _children[parent?.id ?? ''] ?? const [];

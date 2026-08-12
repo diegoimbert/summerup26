@@ -9,8 +9,6 @@ class TodayPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return const PageShell(
-      title: 'Today',
-      subtitle: 'What needs your attention right now',
       child: EmptySection(icon: Icons.wb_sunny_outlined, message: 'Nothing scheduled yet'),
     );
   }

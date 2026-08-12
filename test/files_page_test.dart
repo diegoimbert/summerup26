@@ -2,6 +2,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:overlay_app/library/library_controller.dart';
+import 'package:overlay_app/library/library_store.dart';
 import 'package:overlay_app/pages/files_page.dart';
 import 'package:overlay_app/sources/connections.dart';
 import 'package:overlay_app/sources/credential_store.dart';
@@ -58,6 +59,54 @@ class _FakeTree {
   }
 }
 
+/// A stored library with no disk under it. Widget tests run in a fake async
+/// zone, where a real file read never comes back.
+class _MemoryLibraryStore extends LibraryStore {
+  _MemoryLibraryStore(this.snapshot);
+
+  final LibrarySnapshot? snapshot;
+
+  @override
+  Future<LibrarySnapshot?> readLibrary() async => snapshot;
+
+  @override
+  Future<void> writeLibrary(LibrarySnapshot snapshot) async {}
+
+  @override
+  Future<void> writeScan(
+    List<ScannedFile> files, {
+    DateTime? scannedAt,
+  }) async {}
+}
+
+/// A library holding [entries], without a scan or a model behind it.
+Future<LibraryController> _libraryHolding(
+  ConnectionsController connections,
+  List<LibraryEntry> entries,
+) async {
+  final library = LibraryController(
+    connections: connections,
+    store: _MemoryLibraryStore(
+      LibrarySnapshot(
+        entries: entries,
+        fingerprint: 'test',
+        organizedAt: DateTime(2026, 8, 12),
+      ),
+    ),
+  );
+  await library.load();
+  return library;
+}
+
+LibraryEntry _filed(String path, String organized) => LibraryEntry(
+  file: ScannedFile(
+    path: path,
+    sourceName: 'File System',
+    modified: DateTime(2026, 8, 4),
+  ),
+  organizedPath: organized,
+);
+
 /// Where the page asked the desktop to look, instead of a desktop.
 class _Opened {
   final List<Uri> urls = [];
@@ -69,6 +118,9 @@ class _Opened {
 }
 
 late _Opened _opened;
+
+/// How often the page asked to be taken to Sources.
+late int _sourcesOpened;
 
 Future<_FakeTree> _pumpFiles(WidgetTester tester, CredentialStore store) async {
   tester.view.physicalSize = const Size(1400, 1600);
@@ -85,6 +137,7 @@ Future<_FakeTree> _pumpFiles(WidgetTester tester, CredentialStore store) async {
 
   final tree = _FakeTree();
   _opened = _Opened();
+  _sourcesOpened = 0;
   await tester.pumpWidget(
     MaterialApp(
       theme: buildKandooTheme(),
@@ -92,6 +145,7 @@ Future<_FakeTree> _pumpFiles(WidgetTester tester, CredentialStore store) async {
         body: FilesPage(
           connections: connections,
           library: library,
+          onOpenSources: () => _sourcesOpened += 1,
           treeLoader: tree.loaderFor,
           openUrl: _opened.call,
         ),
@@ -135,6 +189,11 @@ void main() {
     // Connectable but not signed in, and not built at all, respectively.
     expect(find.byTooltip('Google Drive'), findsNothing);
     expect(find.byTooltip('Dropbox'), findsNothing);
+
+    // The grid ends in the way to connect one more.
+    await tester.tap(find.byTooltip('Connect a source'));
+    await tester.pumpAndSettle();
+    expect(_sourcesOpened, 1);
 
     // With nothing picked, the section shows the organized library — which
     // here has nothing in it and no folders to fill it from.
@@ -310,6 +369,84 @@ void main() {
     expect(find.text('Open'), findsNothing);
     expect(find.text('Show in Finder'), findsOneWidget);
     expect(find.text('Copy path'), findsOneWidget);
+  });
+
+  testWidgets('searching looks through the filed away files', (tester) async {
+    tester.view.physicalSize = const Size(1400, 1600);
+    tester.view.devicePixelRatio = 2.0;
+    addTearDown(tester.view.reset);
+
+    final connections = ConnectionsController(store: _MemoryStore());
+    await connections.load();
+    final library = await _libraryHolding(connections, [
+      _filed('/Users/d/Desktop/tax_2025.pdf', 'Self/Finance/Tax return.pdf'),
+      _filed('/Users/d/Desktop/deck.pdf', 'Career/Pitch deck.pdf'),
+    ]);
+    addTearDown(library.dispose);
+
+    _opened = _Opened();
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildKandooTheme(),
+        home: Scaffold(
+          body: FilesPage(
+            connections: connections,
+            library: library,
+            onOpenSources: () {},
+            openUrl: _opened.call,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // The library as filed, until something is asked for.
+    expect(find.text('Self'), findsOneWidget);
+    expect(find.text('Career'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField), 'tax');
+    await tester.pumpAndSettle();
+
+    // Results are flat, and say where each one was filed.
+    expect(find.text('Tax return.pdf'), findsOneWidget);
+    expect(find.text('Pitch deck.pdf'), findsNothing);
+    expect(find.text('Self / Finance'), findsOneWidget);
+
+    // And they behave like the rows they stand for.
+    await _doubleTap(tester, find.text('Tax return.pdf'));
+    await tester.pumpAndSettle();
+    expect(_opened.urls, [Uri.file('/Users/d/Desktop/tax_2025.pdf')]);
+
+    await tester.enterText(find.byType(TextField), 'nothing like this');
+    await tester.pumpAndSettle();
+    expect(find.text('No files match that search'), findsOneWidget);
+
+    // Clearing it puts the library back.
+    await tester.enterText(find.byType(TextField), '');
+    await tester.pumpAndSettle();
+    expect(find.text('Self'), findsOneWidget);
+  });
+
+  testWidgets('searching steps out of a source being browsed', (tester) async {
+    await _pumpFiles(
+      tester,
+      _MemoryStore(
+        folders: {
+          'file_system': ['/Users/diegoimbert/Desktop'],
+        },
+      ),
+    );
+
+    await tester.tap(find.byTooltip('File System'));
+    await tester.pumpAndSettle();
+    expect(find.text('todo.md'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField), 'todo');
+    await tester.pumpAndSettle();
+
+    // The raw tree is gone: a search is a search of the library.
+    expect(find.text('todo.md'), findsNothing);
+    expect(find.text('No files match that search'), findsOneWidget);
   });
 
   testWidgets('several folders are chosen between first', (tester) async {

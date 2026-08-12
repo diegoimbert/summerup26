@@ -86,7 +86,12 @@ class _HomePageState extends State<HomePage> {
     return switch (index) {
       0 => const TodayPage(),
       1 => const ChatPage(),
-      2 => FilesPage(connections: _connections, library: _library),
+      2 => FilesPage(
+        connections: _connections,
+        library: _library,
+        // The + in its grid is the way to connect one more.
+        onOpenSources: () => setState(() => _selectedIndex = 3),
+      ),
       3 => SourcesPage(connections: _connections),
       _ => const PatternsPage(),
     };

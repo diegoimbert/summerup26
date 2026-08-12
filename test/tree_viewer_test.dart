@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -61,7 +62,12 @@ Future<void> _pumpTree(WidgetTester tester, TreeChildrenLoader loader) async {
   await tester.pumpAndSettle();
 }
 
-const _docs = TreeEntry(id: '/docs', label: 'Docs', isFolder: true);
+const _docs = TreeEntry(
+  id: '/docs',
+  label: 'Docs',
+  isFolder: true,
+  detail: '2 files',
+);
 
 _FakeTree _sampleTree() => _FakeTree({
   null: const [_docs, TreeEntry(id: '/notes.md', label: 'notes.md')],
@@ -120,6 +126,34 @@ void main() {
 
     expect(find.text('q1.md'), findsOneWidget);
     expect(tree.calls, [null, '/docs', '/docs/2025']);
+  });
+
+  testWidgets('a row keeps its date and count out of sight until hovered', (
+    tester,
+  ) async {
+    final tree = _sampleTree();
+    await _pumpTree(tester, tree.load);
+
+    double detailOpacity() => tester
+        .widget<AnimatedOpacity>(
+          find.ancestor(
+            of: find.text('2 files'),
+            matching: find.byType(AnimatedOpacity),
+          ),
+        )
+        .opacity;
+
+    // There in the layout, so nothing shifts when it appears.
+    expect(find.text('2 files'), findsOneWidget);
+    expect(detailOpacity(), 0);
+
+    final pointer = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await pointer.addPointer(location: Offset.zero);
+    addTearDown(pointer.removePointer);
+    await pointer.moveTo(tester.getCenter(find.text('Docs')));
+    await tester.pumpAndSettle();
+
+    expect(detailOpacity(), 1);
   });
 
   testWidgets('rows are numbered by where they sit', (tester) async {

@@ -2,19 +2,13 @@ import 'package:flutter/material.dart';
 
 import '../theme.dart';
 
-/// Common chrome for a section: padded column with a title, optional subtitle
-/// and an optional toolbar row under the header.
+/// Common chrome for a section: an optional toolbar row above the body.
+///
+/// No title: the sidebar already says which section is open, and a heading
+/// repeating it costs the top of every screen.
 class PageShell extends StatelessWidget {
-  const PageShell({
-    super.key,
-    required this.title,
-    this.subtitle,
-    this.toolbar,
-    required this.child,
-  });
+  const PageShell({super.key, this.toolbar, required this.child});
 
-  final String title;
-  final String? subtitle;
   final Widget? toolbar;
   final Widget child;
 
@@ -23,36 +17,13 @@ class PageShell extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(32, 28, 32, 0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: const TextStyle(
-                  fontFamily: KandooFonts.heading,
-                  color: KandooColors.textPrimary,
-                  fontSize: 24,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: -0.4,
-                ),
-              ),
-              if (subtitle != null) ...[
-                const SizedBox(height: 4),
-                Text(
-                  subtitle!,
-                  style: const TextStyle(
-                    color: KandooColors.textSecondary,
-                    fontSize: 13.5,
-                  ),
-                ),
-              ],
-              if (toolbar != null) ...[const SizedBox(height: 20), toolbar!],
-            ],
-          ),
-        ),
-        const SizedBox(height: 20),
+        if (toolbar != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(32, 22, 32, 16),
+            child: toolbar,
+          )
+        else
+          const SizedBox(height: 22),
         Expanded(child: child),
       ],
     );

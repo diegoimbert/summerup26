@@ -628,18 +628,25 @@ class _TreeTileState extends State<_TreeTile> {
               ),
               if (entry.detail != null) ...[
                 const SizedBox(width: 12),
-                // Bounded so a long detail gives way to the name rather than
-                // squeezing it out.
-                ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 190),
-                  child: Text(
-                    entry.detail!,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.right,
-                    style: const TextStyle(
-                      fontFamily: KandooFonts.mono,
-                      fontSize: 10.5,
-                      color: KandooColors.textMuted,
+                // Kept in the layout but out of sight until the row is under
+                // the pointer: dates and counts are worth having to hand, not
+                // worth reading down a whole column of.
+                AnimatedOpacity(
+                  opacity: _hovered ? 1 : 0,
+                  duration: const Duration(milliseconds: 120),
+                  // Bounded so a long detail gives way to the name rather than
+                  // squeezing it out.
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 190),
+                    child: Text(
+                      entry.detail!,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(
+                        fontFamily: KandooFonts.mono,
+                        fontSize: 10.5,
+                        color: KandooColors.textMuted,
+                      ),
                     ),
                   ),
                 ),

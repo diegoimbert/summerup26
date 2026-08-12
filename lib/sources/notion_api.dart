@@ -75,18 +75,36 @@ class NotionApi {
   /// enough.
   static const int _maxRetries = 3;
 
-  /// Every page and database shared with this integration, oldest cursor
-  /// first, up to [max] items.
-  Future<List<NotionItem>> everything({int max = 2000}) async {
+  /// Every page and database shared with this integration, up to [max] items.
+  ///
+  /// With [changedSince], the workspace is read newest first and the reading
+  /// stops at the first item that old — which turns "has anything happened?"
+  /// into a single request, since the newest item is the first one back.
+  Future<List<NotionItem>> everything({
+    int max = 2000,
+    DateTime? changedSince,
+  }) async {
     final items = <NotionItem>[];
     String? cursor;
 
     do {
-      final body = await _search(cursor: cursor);
+      final body = await _search(
+        cursor: cursor,
+        newestFirst: changedSince != null,
+      );
 
       for (final raw in (body['results'] as List? ?? const [])) {
         final item = _itemFrom((raw as Map).cast<String, dynamic>());
         if (item == null) continue;
+
+        final edited = item.lastEdited;
+        if (changedSince != null &&
+            edited != null &&
+            !edited.isAfter(changedSince)) {
+          // Newest first, so the first item this old means the rest are older.
+          return items;
+        }
+
         items.add(item);
         if (items.length >= max) return items;
       }
@@ -99,7 +117,10 @@ class NotionApi {
     return items;
   }
 
-  Future<Map<String, dynamic>> _search({String? cursor}) async {
+  Future<Map<String, dynamic>> _search({
+    String? cursor,
+    bool newestFirst = false,
+  }) async {
     for (var attempt = 0; ; attempt += 1) {
       final http.Response response;
       try {
@@ -110,7 +131,15 @@ class NotionApi {
             'Notion-Version': version,
             'Content-Type': 'application/json',
           },
-          body: jsonEncode({'page_size': pageSize, 'start_cursor': ?cursor}),
+          body: jsonEncode({
+            'page_size': pageSize,
+            'start_cursor': ?cursor,
+            if (newestFirst)
+              'sort': {
+                'direction': 'descending',
+                'timestamp': 'last_edited_time',
+              },
+          }),
         );
       } catch (error) {
         throw NotionException('Could not reach Notion: $error');

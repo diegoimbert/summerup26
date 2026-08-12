@@ -13,7 +13,7 @@ import 'source_scanner.dart';
 /// Databases and parent pages are not filed themselves. A database is a place
 /// pages live rather than a document, and a page that holds other pages is
 /// filed on its own account anyway.
-class NotionScanner extends SourceScanner {
+class NotionScanner extends SourceScanner implements PollableScanner {
   const NotionScanner({
     required this.api,
     this.maxFiles = 2000,
@@ -26,6 +26,23 @@ class NotionScanner extends SourceScanner {
 
   /// How far up a parent chain to walk before deciding the path is deep enough.
   final int maxDepth;
+
+  /// Whether anything in the workspace has been touched since [watermark].
+  ///
+  /// One request: the workspace is read newest first and stops at the first
+  /// page as old as the watermark. A deletion is invisible to this — a page
+  /// that is gone is simply absent — so it is caught by the sweep instead.
+  @override
+  Future<bool> hasChangesSince(DateTime? watermark) async {
+    if (watermark == null) return true;
+
+    try {
+      final newest = await api.everything(max: 1, changedSince: watermark);
+      return newest.isNotEmpty;
+    } on NotionException catch (failure) {
+      throw ScanException(failure.message);
+    }
+  }
 
   @override
   Future<ScanResult> scan({

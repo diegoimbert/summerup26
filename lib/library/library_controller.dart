@@ -59,10 +59,12 @@ class LibraryController extends ChangeNotifier {
     SourceScannerFactory? scanners,
     DeepSeekOrganizer? organizer,
     SourceWatcher? watcher,
+    this.pollInterval = const Duration(minutes: 2),
   }) : _store = store ?? const LibraryStore(),
        _organizer = organizer ?? DeepSeekOrganizer(),
        _watcher = watcher ?? FileSystemWatcher() {
     _scannerFor = scanners ?? _defaultScannerFor;
+    _connected = _connectedNow();
     connections.addListener(_onConnectionsChanged);
   }
 
@@ -78,6 +80,36 @@ class LibraryController extends ChangeNotifier {
   /// Work started before the window closed can still be in flight afterwards;
   /// what it comes back with has nowhere to go.
   bool _disposed = false;
+
+  /// The scannable sources connected as of the last look, so a source arriving
+  /// or leaving can be told from a folder being edited. Null until the stored
+  /// connections have been read: what the app launches with is not news.
+  Set<String>? _connected;
+
+  /// A source changed while a scan was running. The scan in flight was started
+  /// before it and cannot see it, so another is owed once this one is done.
+  bool _rescanOwed = false;
+
+  /// How often a source that cannot tell Kandoo anything is asked. Each ask is
+  /// one request when nothing has happened.
+  final Duration pollInterval;
+
+  Timer? _poller;
+
+  /// The newest edit Kandoo has seen, per source. Asking for anything newer is
+  /// what makes a quiet workspace cost one request.
+  final Map<String, DateTime> _watermarks = {};
+
+  /// Polls since the last full listing. A deletion leaves nothing behind to
+  /// notice, so every so often the source is listed in full rather than asked.
+  int _pollsSinceSweep = 0;
+
+  /// Roughly every twenty minutes at the default interval.
+  static const int _pollsPerSweep = 10;
+
+  /// Sources with nothing to say for themselves. Drive has a change feed and
+  /// the disk has events; a workspace has neither.
+  static const Set<String> pollableSources = {'notion'};
 
   /// A batch bigger than this is a checkout or an unzip, not the user saving
   /// something. Filing it would cost a request per hundred files for a change
@@ -168,6 +200,144 @@ class LibraryController extends ChangeNotifier {
     await load();
     if (_entries.isEmpty) await refresh();
     _watchFolders();
+    _schedulePolling();
+  }
+
+  /// Keeps a timer running for as long as there is a source that has to be
+  /// asked whether anything has happened.
+  void _schedulePolling() {
+    final wanted = _pollTarget != null;
+    if (wanted == (_poller != null)) return;
+
+    _poller?.cancel();
+    _poller = wanted
+        ? Timer.periodic(pollInterval, (_) => pollSources())
+        : null;
+  }
+
+  /// The source to ask, if any. One at a time: only Notion is asked today, and
+  /// asking two sources in one tick would only make the code harder to follow.
+  ({SourceDescriptor source, List<String> folders})? get _pollTarget {
+    for (final target in _scanTargets()) {
+      if (pollableSources.contains(target.source.id)) return target;
+    }
+    return null;
+  }
+
+  /// Asks whether anything has changed, and puts right what has.
+  ///
+  /// Public because a timer is a poor thing to wait on in a test, and because
+  /// "check now" is a reasonable thing to want.
+  Future<void> pollSources() async {
+    if (isBusy || _disposed) return;
+
+    final target = _pollTarget;
+    if (target == null) return;
+
+    final scanner = await _scannerFor(target.source);
+    if (scanner == null) return;
+
+    // A page that has been deleted is not late news, it is no news: it simply
+    // stops being listed. Only a full listing notices, so one is done every so
+    // often regardless of the answer to the cheap question.
+    final sweeping = _pollsSinceSweep >= _pollsPerSweep;
+    _pollsSinceSweep = sweeping ? 0 : _pollsSinceSweep + 1;
+
+    try {
+      final askable = scanner is PollableScanner
+          ? scanner as PollableScanner
+          : null;
+      if (!sweeping && askable != null) {
+        final quiet = !await askable.hasChangesSince(
+          _watermarks[target.source.name],
+        );
+        if (quiet || _disposed) return;
+      }
+
+      final found = await scanner.scan(
+        roots: target.folders,
+        sourceName: target.source.name,
+      );
+      if (_disposed) return;
+
+      await _reconcile(target.source.name, found.files);
+    } on ScanException catch (failure) {
+      _error = failure.message;
+      _stage = LibraryStage.failed;
+      if (!_disposed) notifyListeners();
+    } on OAuthException catch (failure) {
+      _error = failure.message;
+      _stage = LibraryStage.failed;
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  /// Works out what a fresh listing of one source means for the library.
+  ///
+  /// A page that has moved or been renamed is filed again rather than left
+  /// under the name it had: the library shows what the user calls things now.
+  Future<void> _reconcile(String sourceName, List<ScannedFile> files) async {
+    final found = {for (final file in files) file.identity: file};
+    final seen = <String>{};
+
+    final kept = <LibraryEntry>[];
+    final arrived = <ScannedFile>[];
+
+    for (final entry in _entries) {
+      if (entry.file.sourceName != sourceName) {
+        kept.add(entry);
+        continue;
+      }
+
+      seen.add(entry.file.identity);
+      final current = found[entry.file.identity];
+      if (current == null) continue;
+
+      if (current.path != entry.file.path) {
+        arrived.add(current);
+        continue;
+      }
+
+      // Same place, possibly edited since: keep where it was filed, and keep
+      // its date honest.
+      kept.add(LibraryEntry(file: current, organizedPath: entry.organizedPath));
+    }
+
+    for (final file in files) {
+      if (!seen.contains(file.identity)) arrived.add(file);
+    }
+
+    _watermarks[sourceName] = _newestOf(files) ?? DateTime.now();
+
+    // Nothing but dates moved, which is not worth a rewrite.
+    if (arrived.isEmpty && kept.length == _entries.length) {
+      // Nothing came or went. If dates moved, they are worth keeping honest —
+      // but there is nobody to ask about them, so this goes straight to disk.
+      if (_datesMoved(kept)) await _commit(kept);
+      return;
+    }
+
+    await _applyChanges(kept: kept, arrived: arrived);
+  }
+
+  bool _datesMoved(List<LibraryEntry> kept) {
+    final before = {for (final entry in _entries) entry.file.identity: entry};
+    for (final entry in kept) {
+      if (before[entry.file.identity]?.file.modified != entry.file.modified) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static DateTime? _newestOf(List<ScannedFile> files) {
+    DateTime? newest;
+    for (final file in files) {
+      final modified = file.modified;
+      if (modified == null) continue;
+      if (newest == null || modified.isAfter(newest)) newest = modified;
+    }
+    return newest;
   }
 
   /// Watches the folders in scope, so a file the user adds or removes while
@@ -194,11 +364,49 @@ class LibraryController extends ChangeNotifier {
     _changes = _watcher.watch(roots).listen(_onChanged);
   }
 
-  /// Folders can be added or dropped in Sources while the app is open.
+  /// Sources come and go in Sources while the app is open, and so do the
+  /// folders they are narrowed to.
+  ///
+  /// A source arriving brings files with it and one leaving takes its files
+  /// away, so either is worth going and looking again for: the library on
+  /// screen is about somewhere the user is no longer, or no longer only.
   void _onConnectionsChanged() {
+    final connected = _connectedNow();
+    final before = _connected;
+    _connected = connected;
+
+    if (connected != null && before != null && !_sameSet(before, connected)) {
+      if (isBusy) {
+        _rescanOwed = true;
+      } else {
+        // Not awaited: this is a listener, and the scan reports its own
+        // progress and its own failures as it goes.
+        unawaited(refresh());
+      }
+      return;
+    }
+
+    _schedulePolling();
     if (_changes == null && _watched.isEmpty) return;
     _watchFolders();
   }
+
+  /// The scannable sources signed in to right now, or null while the stored
+  /// connections have still to be read.
+  ///
+  /// Only the sources a scan would actually visit count. Connecting something
+  /// Kandoo cannot read yet changes nothing about what it holds, and is not
+  /// worth walking the disk for.
+  Set<String>? _connectedNow() {
+    if (!connections.isLoaded) return null;
+    return {
+      for (final id in scannableSources.keys)
+        if (connections.isConnected(id)) id,
+    };
+  }
+
+  static bool _sameSet(Set<String> a, Set<String> b) =>
+      a.length == b.length && a.containsAll(b);
 
   /// Works out what a batch of changed paths means for the library, and applies
   /// it: anything gone is dropped, anything new is filed.
@@ -267,41 +475,52 @@ class LibraryController extends ChangeNotifier {
 
     if (_disposed) return;
 
-    final removed = _entries.length - kept.length;
-    final newFiles = arrived.values.toList();
-    if (removed == 0 && newFiles.isEmpty) return;
+    await _applyChanges(kept: kept, arrived: arrived.values.toList());
+  }
 
-    if (newFiles.length > _maxAutoFiled) {
+  /// Puts a set of changes into the library: [kept] is what survives, [arrived]
+  /// is what has to be filed.
+  ///
+  /// Shared by watching and polling, because what a change means differs by
+  /// source but what to do about one does not.
+  Future<void> _applyChanges({
+    required List<LibraryEntry> kept,
+    required List<ScannedFile> arrived,
+  }) async {
+    final removed = _entries.length - kept.length;
+    if (removed == 0 && arrived.isEmpty) return;
+
+    if (arrived.length > _maxAutoFiled) {
       _warnings = [
-        '${newFiles.length} new files appeared — Rescan to file them',
+        '${arrived.length} new files appeared — Rescan to file them',
       ];
       if (removed > 0) await _commit(kept);
       notifyListeners();
       return;
     }
 
-    if (newFiles.isEmpty) {
+    if (arrived.isEmpty) {
       // Nothing to ask anyone about: what is gone is simply gone.
       await _commit(kept);
       return;
     }
 
-    _filingCount = newFiles.length;
+    _filingCount = arrived.length;
     _stage = LibraryStage.organizing;
     _error = null;
     notifyListeners();
 
     try {
       final placed = await _organizer.organize(
-        newFiles,
+        arrived,
         // The library the user already knows is the shape to file into.
         existingFolders: _foldersInUse(kept),
       );
 
       await _commit([
         ...kept,
-        for (var index = 0; index < newFiles.length; index += 1)
-          LibraryEntry(file: newFiles[index], organizedPath: placed[index]),
+        for (var index = 0; index < arrived.length; index += 1)
+          LibraryEntry(file: arrived[index], organizedPath: placed[index]),
       ]);
       _stage = LibraryStage.ready;
     } on OrganizerException catch (failure) {
@@ -391,8 +610,12 @@ class LibraryController extends ChangeNotifier {
 
   /// Scans every connected source, then organizes what changed.
   ///
-  /// [force] sends the scan to the model even when it matches the stored
-  /// library, for when the user wants a fresh arrangement of the same files.
+  /// Only what is new is sent to the model. A file that already has a home
+  /// keeps it, so connecting a source costs a request for the files it brought
+  /// and nothing for the library the user already knows — which also means
+  /// their folders do not rearrange themselves behind a change they did not
+  /// ask for. [force] is the exception, and re-files everything: it is what the
+  /// Rescan button is for.
   Future<void> refresh({bool force = false}) async {
     if (isBusy) return;
 
@@ -430,21 +653,51 @@ class LibraryController extends ChangeNotifier {
         return;
       }
 
-      _stage = LibraryStage.organizing;
-      notifyListeners();
+      // Where each file already lives, so only what the scan has not seen
+      // before goes to the model.
+      final filed = force
+          ? const <String, String>{}
+          : {
+              for (final entry in _entries)
+                entry.file.identity: entry.organizedPath,
+            };
 
-      final paths = await _organizer.organize(
-        files,
-        onProgress: (organized, total) {
-          _organizedCount = organized;
-          notifyListeners();
-        },
-      );
+      final fresh = [
+        for (final file in files)
+          if (!filed.containsKey(file.identity)) file,
+      ];
+
+      final placed = <String, String>{};
+
+      if (fresh.isNotEmpty) {
+        _filingCount = fresh.length;
+        _stage = LibraryStage.organizing;
+        notifyListeners();
+
+        final paths = await _organizer.organize(
+          fresh,
+          // Into the library the user already knows, rather than alongside it.
+          existingFolders: _foldersInUse(_entries),
+          onProgress: (organized, total) {
+            _organizedCount = organized;
+            notifyListeners();
+          },
+        );
+
+        for (var index = 0; index < fresh.length; index += 1) {
+          placed[fresh[index].identity] = paths[index];
+        }
+      }
 
       final snapshot = LibrarySnapshot(
         entries: [
-          for (var index = 0; index < files.length; index += 1)
-            LibraryEntry(file: files[index], organizedPath: paths[index]),
+          for (final file in files)
+            LibraryEntry(
+              // The file as the scan just found it, so a date that has moved on
+              // is the date that shows.
+              file: file,
+              organizedPath: filed[file.identity] ?? placed[file.identity]!,
+            ),
         ],
         fingerprint: fingerprint,
         organizedAt: DateTime.now(),
@@ -468,8 +721,16 @@ class LibraryController extends ChangeNotifier {
       _stage = LibraryStage.failed;
     } finally {
       _currentSource = null;
+      _filingCount = 0;
       _watchFolders();
+      _schedulePolling();
       notifyListeners();
+
+      // A source that changed while this was running was never in it.
+      if (_rescanOwed && !_disposed) {
+        _rescanOwed = false;
+        unawaited(refresh());
+      }
     }
   }
 
@@ -549,6 +810,17 @@ class LibraryController extends ChangeNotifier {
 
   void _apply(LibrarySnapshot snapshot) {
     _entries = snapshot.entries;
+    for (final source in pollableSources) {
+      final name = sourceWithId(source)?.name;
+      if (name == null) continue;
+      final newest = _newestOf([
+        for (final entry in snapshot.entries)
+          if (entry.file.sourceName == name) entry.file,
+      ]);
+      // What was stored says how fresh this source was, so a launch does not
+      // start by listing everything again.
+      if (newest != null) _watermarks[name] = newest;
+    }
     _fingerprint = snapshot.fingerprint;
     _organizedAt = snapshot.organizedAt;
     _tree = LibraryTree.from(_entries);
@@ -558,6 +830,7 @@ class LibraryController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _poller?.cancel();
     connections.removeListener(_onConnectionsChanged);
     _changes?.cancel();
     _watcher.dispose();

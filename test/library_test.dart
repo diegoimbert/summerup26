@@ -34,11 +34,24 @@ class _MemoryStore extends CredentialStore {
 }
 
 /// A scan with no disk behind it.
-class _FakeScanner extends SourceScanner {
+class _FakeScanner extends SourceScanner implements PollableScanner {
   _FakeScanner(this.files);
 
-  final List<ScannedFile> files;
+  List<ScannedFile> files;
   final List<List<String>> calls = [];
+
+  /// What the source says when asked whether anything has happened.
+  bool changed = false;
+
+  /// The watermarks it was asked about, so a test can tell a cheap question
+  /// from a full listing.
+  final List<DateTime?> asked = [];
+
+  @override
+  Future<bool> hasChangesSince(DateTime? watermark) async {
+    asked.add(watermark);
+    return changed;
+  }
 
   @override
   Future<ScanResult> scan({
@@ -1301,6 +1314,195 @@ void main() {
       expect(organizer.calls, before, reason: 'a checkout is not a decision');
       expect(library.warnings.single, contains('120 new files'));
       expect(library.entries, hasLength(1));
+    });
+  });
+
+  group('polling a source that cannot tell us anything', () {
+    late Directory home;
+    late LibraryStore store;
+
+    setUp(() async {
+      home = await Directory.systemTemp.createTemp('kandoo_poll_');
+      store = LibraryStore(directory: home);
+    });
+
+    tearDown(() => home.delete(recursive: true));
+
+    ScannedFile page(String id, String path, {DateTime? edited}) => ScannedFile(
+      path: path,
+      sourceName: 'Notion',
+      externalId: id,
+      modified: edited ?? DateTime.utc(2026, 8, 10),
+    );
+
+    Future<(LibraryController, _FakeScanner, _FakeOrganizer)> workspaceOf(
+      List<ScannedFile> pages,
+    ) async {
+      final connections = ConnectionsController(
+        store: _MemoryStore(
+          connections: {
+            'notion': const SourceCredentials(
+              sourceId: 'notion',
+              accessToken: 'token',
+            ),
+          },
+        ),
+      );
+      await connections.load();
+
+      final scanner = _FakeScanner([...pages]);
+      final organizer = _FakeOrganizer();
+      final library = LibraryController(
+        connections: connections,
+        store: store,
+        scanners: _only(scanner),
+        organizer: organizer,
+      );
+      addTearDown(library.dispose);
+
+      await library.start();
+      return (library, scanner, organizer);
+    }
+
+    test('a quiet workspace costs one question and nothing else', () async {
+      final (library, scanner, organizer) = await workspaceOf([
+        page('p1', '/Projects/Todo'),
+      ]);
+      final scans = scanner.calls.length;
+      final calls = organizer.calls;
+
+      await library.pollSources();
+
+      expect(scanner.asked, hasLength(1));
+      // The watermark is what the scan already knew, so a launch does not start
+      // by listing everything again.
+      expect(scanner.asked.single, DateTime.utc(2026, 8, 10));
+      expect(scanner.calls, hasLength(scans), reason: 'nothing to list');
+      expect(organizer.calls, calls);
+    });
+
+    test('a renamed page is filed again under what it is now called', () async {
+      final (library, scanner, organizer) = await workspaceOf([
+        page('p1', '/Projects/Todo'),
+        page('p2', '/Projects/Reading'),
+      ]);
+      final calls = organizer.calls;
+
+      scanner
+        ..changed = true
+        ..files = [
+          page('p1', '/Projects/Groceries', edited: DateTime.utc(2026, 8, 11)),
+          page('p2', '/Projects/Reading'),
+        ];
+      await library.pollSources();
+
+      expect(organizer.calls, calls + 1, reason: 'one page to file again');
+      expect(library.entries, hasLength(2));
+      expect(
+        library.entries.map((entry) => entry.file.path),
+        containsAll(['/Projects/Groceries', '/Projects/Reading']),
+      );
+      expect(
+        library.entries
+            .firstWhere((entry) => entry.file.externalId == 'p1')
+            .title,
+        'Groceries',
+      );
+      // And it was filed into the library that already exists rather than
+      // beside it.
+      expect(organizer.knownFolders, contains('Self/Finance'));
+    });
+
+    test('a new page is filed without disturbing the rest', () async {
+      final (library, scanner, organizer) = await workspaceOf([
+        page('p1', '/Projects/Todo'),
+      ]);
+      final calls = organizer.calls;
+
+      scanner
+        ..changed = true
+        ..files = [
+          page('p1', '/Projects/Todo'),
+          page('p2', '/Projects/Shopping', edited: DateTime.utc(2026, 8, 11)),
+        ];
+      await library.pollSources();
+
+      expect(organizer.calls, calls + 1);
+      expect(library.entries.map((entry) => entry.file.externalId), [
+        'p1',
+        'p2',
+      ]);
+    });
+
+    test('an edit that moves nothing costs no filing', () async {
+      final (library, scanner, organizer) = await workspaceOf([
+        page('p1', '/Projects/Todo'),
+      ]);
+      final calls = organizer.calls;
+
+      scanner
+        ..changed = true
+        ..files = [
+          page('p1', '/Projects/Todo', edited: DateTime.utc(2026, 8, 12)),
+        ];
+      await library.pollSources();
+
+      expect(organizer.calls, calls, reason: 'it is where it was');
+      // The date still follows, so the library does not go stale.
+      expect(library.entries.single.file.modified, DateTime.utc(2026, 8, 12));
+    });
+
+    test('a deleted page is noticed by the sweep', () async {
+      final (library, scanner, organizer) = await workspaceOf([
+        page('p1', '/Projects/Todo'),
+        page('p2', '/Projects/Shopping'),
+      ]);
+      final calls = organizer.calls;
+
+      // Deleting leaves nothing behind to ask about, so the cheap question
+      // keeps saying no.
+      scanner.files = [page('p1', '/Projects/Todo')];
+      for (var poll = 0; poll < 10; poll += 1) {
+        await library.pollSources();
+      }
+      expect(library.entries, hasLength(2), reason: 'nothing has asked yet');
+
+      // The eleventh lists the workspace rather than asking about it.
+      await library.pollSources();
+
+      expect(library.entries.map((entry) => entry.file.externalId), ['p1']);
+      expect(organizer.calls, calls, reason: 'nothing to file, only to drop');
+    });
+
+    test('polling stays out of the way of a scan', () async {
+      final (library, scanner, _) = await workspaceOf([
+        page('p1', '/Projects/Todo'),
+      ]);
+      scanner.changed = true;
+
+      final scanning = library.refresh(force: true);
+      await library.pollSources();
+      await scanning;
+
+      expect(scanner.asked, isEmpty, reason: 'a scan sees everything anyway');
+    });
+
+    test('a workspace that has gone quiet stops being asked', () async {
+      final connections = ConnectionsController(store: _MemoryStore());
+      await connections.load();
+
+      final library = LibraryController(
+        connections: connections,
+        store: store,
+        scanners: _only(_FakeScanner(const [])),
+        organizer: _FakeOrganizer(),
+      );
+      addTearDown(library.dispose);
+      await library.start();
+
+      // Nothing connected, so there is nothing to ask.
+      await library.pollSources();
+      expect(library.entries, isEmpty);
     });
   });
 

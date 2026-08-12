@@ -22,6 +22,16 @@ abstract class SourceScanner {
   });
 }
 
+/// A source that cannot tell Kandoo when something happens, and has to be
+/// asked instead.
+///
+/// The question is deliberately cheap and vague — *has anything changed?* — so
+/// that a quiet source costs one request. Working out what changed is the
+/// scan's job, and only worth doing once the answer is yes.
+abstract class PollableScanner {
+  Future<bool> hasChangesSince(DateTime? watermark);
+}
+
 /// Thrown when a source cannot be read: no credentials, no network, a refusal.
 /// The message is shown to the user, so it should say what to do about it.
 class ScanException implements Exception {

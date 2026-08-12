@@ -284,7 +284,12 @@ class _TreeViewerState extends State<TreeViewer> with TickerProviderStateMixin {
   List<_Row> _rows() {
     final rows = <_Row>[];
 
-    void walk(TreeEntry? parent, int depth, List<Animation<double>> reveals) {
+    void walk(
+      TreeEntry? parent,
+      int depth,
+      List<Animation<double>> reveals,
+      String prefix,
+    ) {
       final branch = _branches[parent?.id];
       if (branch == null) return;
 
@@ -307,15 +312,18 @@ class _TreeViewerState extends State<TreeViewer> with TickerProviderStateMixin {
         return;
       }
 
-      for (final entry in children) {
+      for (var index = 0; index < children.length; index += 1) {
+        final entry = children[index];
         final child = _branches[entry.id];
         final showing = entry.isFolder && (child?.isShowing ?? false);
+        final number = prefix.isEmpty ? '${index + 1}' : '$prefix.${index + 1}';
 
         rows.add(
           _EntryRow(
             depth: depth,
             reveals: reveals,
             entry: entry,
+            number: number,
             open: child?.open ?? false,
             loading: child?.loading ?? false,
           ),
@@ -323,12 +331,12 @@ class _TreeViewerState extends State<TreeViewer> with TickerProviderStateMixin {
 
         if (showing) {
           final reveal = child!.eased;
-          walk(entry, depth + 1, [...reveals, ?reveal]);
+          walk(entry, depth + 1, [...reveals, ?reveal], number);
         }
       }
     }
 
-    walk(null, 0, const []);
+    walk(null, 0, const [], '');
     return rows;
   }
 
@@ -369,6 +377,7 @@ class _TreeViewerState extends State<TreeViewer> with TickerProviderStateMixin {
             _EntryRow() => _TreeTile(
               entry: row.entry,
               depth: row.depth,
+              number: row.number,
               expanded: row.open,
               loading: row.loading,
               onTap: row.entry.isFolder ? () => _toggle(row.entry) : null,
@@ -443,11 +452,15 @@ class _EntryRow extends _Row {
     required super.depth,
     required super.reveals,
     required this.entry,
+    required this.number,
     required this.open,
     required this.loading,
   });
 
   final TreeEntry entry;
+
+  /// Where this row sits, counted through the tree: `1`, `1.2`, `1.2.1`.
+  final String number;
 
   /// Whether this row's own folder is open.
   final bool open;
@@ -479,6 +492,7 @@ class _TreeTile extends StatefulWidget {
   const _TreeTile({
     required this.entry,
     required this.depth,
+    required this.number,
     required this.expanded,
     required this.loading,
     required this.onTap,
@@ -488,6 +502,10 @@ class _TreeTile extends StatefulWidget {
 
   final TreeEntry entry;
   final int depth;
+
+  /// Where the row sits in the tree: `1`, `1.2`, `1.2.1`.
+  final String number;
+
   final bool expanded;
 
   /// Whether this folder's contents are on their way. Said here rather than on
@@ -571,34 +589,32 @@ class _TreeTileState extends State<_TreeTile> {
           color: _hovered ? KandooColors.hoverFill : Colors.transparent,
           child: Row(
             children: [
-              SizedBox(
-                width: 17,
-                child: switch ((entry.isFolder, widget.loading)) {
-                  (true, true) => const Padding(
-                    padding: EdgeInsets.only(right: 4),
-                    child: SizedBox(
-                      width: 11,
-                      height: 11,
-                      child: CircularProgressIndicator(strokeWidth: 1.5),
-                    ),
-                  ),
-                  (true, false) => Icon(
-                    widget.expanded
-                        ? Icons.keyboard_arrow_down
-                        : Icons.keyboard_arrow_right,
-                    size: 16,
-                    color: KandooColors.textMuted,
-                  ),
-                  _ => null,
-                },
+              Text(
+                widget.number,
+                style: const TextStyle(
+                  fontFamily: KandooFonts.mono,
+                  fontSize: 11,
+                  color: KandooColors.textMuted,
+                ),
               ),
-              Icon(
-                icon,
-                size: 15,
-                color: entry.isFolder
-                    ? KandooColors.accentDeep
-                    : KandooColors.textMuted,
-              ),
+              const SizedBox(width: 9),
+              if (widget.loading)
+                const SizedBox(
+                  width: 15,
+                  height: 15,
+                  child: Padding(
+                    padding: EdgeInsets.all(2),
+                    child: CircularProgressIndicator(strokeWidth: 1.5),
+                  ),
+                )
+              else
+                Icon(
+                  icon,
+                  size: 15,
+                  color: entry.isFolder
+                      ? KandooColors.accentDeep
+                      : KandooColors.textMuted,
+                ),
               const SizedBox(width: 9),
               Expanded(
                 child: Text(

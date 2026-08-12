@@ -73,6 +73,10 @@ class LibraryController extends ChangeNotifier {
   StreamSubscription<Set<String>>? _changes;
   List<String> _watched = const [];
 
+  /// Work started before the window closed can still be in flight afterwards;
+  /// what it comes back with has nowhere to go.
+  bool _disposed = false;
+
   /// A batch bigger than this is a checkout or an unzip, not the user saving
   /// something. Filing it would cost a request per hundred files for a change
   /// they did not make on purpose, so it waits for a Rescan.
@@ -200,7 +204,7 @@ class LibraryController extends ChangeNotifier {
   /// again and compared against what the library holds for it.
   Future<void> _onChanged(Set<String> paths) async {
     // A scan already in flight will see everything anyway.
-    if (isBusy) return;
+    if (isBusy || _disposed) return;
 
     final inScope = paths.where(_isWatched).toList();
     if (inScope.isEmpty) return;
@@ -252,18 +256,21 @@ class LibraryController extends ChangeNotifier {
         .where(
           (entry) => !gone.any(
             (path) =>
-                entry.file.path == path ||
-                entry.file.path.startsWith('$path/'),
+                entry.file.path == path || entry.file.path.startsWith('$path/'),
           ),
         )
         .toList();
+
+    if (_disposed) return;
 
     final removed = _entries.length - kept.length;
     final newFiles = arrived.values.toList();
     if (removed == 0 && newFiles.isEmpty) return;
 
     if (newFiles.length > _maxAutoFiled) {
-      _warnings = ['${newFiles.length} new files appeared — Rescan to file them'];
+      _warnings = [
+        '${newFiles.length} new files appeared — Rescan to file them',
+      ];
       if (removed > 0) await _commit(kept);
       notifyListeners();
       return;
@@ -304,7 +311,7 @@ class LibraryController extends ChangeNotifier {
       _stage = LibraryStage.failed;
     } finally {
       _filingCount = 0;
-      notifyListeners();
+      if (!_disposed) notifyListeners();
     }
   }
 
@@ -321,6 +328,8 @@ class LibraryController extends ChangeNotifier {
 
     await _store.writeScan(files);
     await _store.writeLibrary(snapshot);
+    if (_disposed) return;
+
     _apply(snapshot);
     notifyListeners();
   }
@@ -538,6 +547,7 @@ class LibraryController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     connections.removeListener(_onConnectionsChanged);
     _changes?.cancel();
     _watcher.dispose();

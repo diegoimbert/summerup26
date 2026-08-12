@@ -89,12 +89,22 @@ class _FakeWatcher implements SourceWatcher {
     return _changes.stream;
   }
 
-  /// Reports a batch and waits for it to be dealt with. Working out what a
-  /// change means involves real reads, so this waits on the clock rather than
-  /// on a turn of the event loop.
-  Future<void> report(Set<String> paths) async {
+  /// Reports a batch and waits for it to be dealt with.
+  ///
+  /// Working out what a change means involves real reads, so this waits on the
+  /// clock. Where there is something to wait *for*, [until] says so, which
+  /// keeps a slow machine from being mistaken for a broken one.
+  Future<void> report(Set<String> paths, {bool Function()? until}) async {
     _changes.add(paths);
-    await Future<void>.delayed(const Duration(milliseconds: 80));
+
+    for (var wait = 0; wait < 120; wait += 1) {
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+      if (until == null) {
+        if (wait >= 3) return;
+      } else if (until()) {
+        return;
+      }
+    }
   }
 
   @override
@@ -883,7 +893,7 @@ void main() {
         final before = organizer.calls;
         final revision = library.revision;
 
-        await watcher.report({gone});
+        await watcher.report({gone}, until: () => library.entries.length == 1);
 
         expect(library.entries.map((entry) => entry.file.path), [
           '${folder.path}/stays.pdf',
@@ -903,7 +913,9 @@ void main() {
         '${folder.path}/keep.pdf',
       ]);
 
-      await watcher.report({'${folder.path}/Trip'});
+      await watcher.report({
+        '${folder.path}/Trip',
+      }, until: () => library.entries.length == 1);
 
       expect(library.entries.map((entry) => entry.file.path), [
         '${folder.path}/keep.pdf',
@@ -926,7 +938,9 @@ void main() {
       await leaves.delete();
       final arrival = File('${folder.path}/arrival.pdf');
       await arrival.writeAsString('x');
-      await watcher.report({folder.path});
+      await watcher.report({
+        folder.path,
+      }, until: () => organizer.calls == before + 1);
 
       expect(library.entries.map((entry) => entry.file.path), [
         stays.path,
@@ -943,7 +957,7 @@ void main() {
       final arrival = File('${folder.path}/new arrival.pdf');
       await arrival.writeAsString('hello');
 
-      await watcher.report({arrival.path});
+      await watcher.report({arrival.path}, until: () => organizer.calls == 2);
 
       expect(organizer.calls, 2, reason: 'the scan, then this one file');
       // Asked to file into the library the user already knows.
@@ -1005,7 +1019,10 @@ void main() {
       final after = File('${folder.path}/Passport scan.pdf');
       await before.rename(after.path);
 
-      await watcher.report({before.path, after.path});
+      await watcher.report({
+        before.path,
+        after.path,
+      }, until: () => organizer.calls == 2);
 
       expect(library.entries.map((entry) => entry.file.path), [after.path]);
       expect(organizer.calls, 2);
@@ -1024,7 +1041,7 @@ void main() {
         flood.add(file.path);
       }
 
-      await watcher.report(flood);
+      await watcher.report(flood, until: () => library.warnings.isNotEmpty);
 
       expect(organizer.calls, before, reason: 'a checkout is not a decision');
       expect(library.warnings.single, contains('120 new files'));

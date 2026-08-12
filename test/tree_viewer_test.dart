@@ -122,6 +122,31 @@ void main() {
     expect(tree.calls, [null, '/docs', '/docs/2025']);
   });
 
+  testWidgets('rows are numbered by where they sit', (tester) async {
+    final tree = _sampleTree();
+    await _pumpTree(tester, tree.load);
+
+    // The top level counts from one, folders and files alike.
+    expect(find.text('1'), findsOneWidget);
+    expect(find.text('2'), findsOneWidget);
+
+    await tester.tap(find.text('Docs'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('1.1'), findsOneWidget);
+    expect(find.text('1.2'), findsOneWidget);
+
+    await tester.tap(find.text('2025'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('1.1.1'), findsOneWidget);
+    // And the numbering goes away with the folder that carried it.
+    await tester.tap(find.text('Docs'));
+    await tester.pumpAndSettle();
+    expect(find.text('1.1.1'), findsNothing);
+    expect(find.text('1'), findsOneWidget);
+  });
+
   testWidgets('a folder that cannot be read says so, and retries on click', (
     tester,
   ) async {

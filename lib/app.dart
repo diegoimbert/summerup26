@@ -5,8 +5,11 @@ import 'library/library_controller.dart';
 import 'pages/chat_page.dart';
 import 'pages/files_page.dart';
 import 'pages/patterns_page.dart';
+import 'pages/settings_page.dart';
 import 'pages/sources_page.dart';
 import 'pages/today_page.dart';
+import 'pages/welcome_dialog.dart';
+import 'settings/profile.dart';
 import 'sources/connections.dart';
 import 'theme.dart';
 
@@ -45,6 +48,14 @@ const List<NavSection> kNavSections = [
   NavSection('Pattern recognized', Icons.grid_view_outlined),
 ];
 
+/// Settings sits apart from the sections, at the foot of the menu: it is not
+/// somewhere the user works, it is where they go when something needs
+/// changing.
+const NavSection kSettingsSection = NavSection('Settings', Icons.tune);
+
+/// The index [kSettingsSection] answers to, after the sections proper.
+final int kSettingsIndex = kNavSections.length;
+
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -55,6 +66,9 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   /// Shared across sections so connection state survives navigation.
   final ConnectionsController _connections = ConnectionsController();
+
+  /// Who the app is talking to, for Today's greeting and Settings.
+  final ProfileController _profile = ProfileController();
 
   late final LibraryController _library = LibraryController(
     connections: _connections,
@@ -75,10 +89,18 @@ class _HomePageState extends State<HomePage> {
     _start();
   }
 
-  /// Everything the window needs before it is worth looking at: who is
-  /// connected, and the library as it was left. Scanning only happens here when
-  /// there is no library yet; after that it is the user's call.
+  /// Everything the window needs before it is worth looking at: who the user
+  /// is, who is connected, and the library as it was left. Scanning only
+  /// happens here when there is no library yet; after that it is the user's
+  /// call.
   Future<void> _start() async {
+    await _profile.load();
+    // Asked before the library is touched, so the first thing the user does is
+    // answer one short question rather than watch a scan.
+    if (mounted && _profile.needsFirstName) {
+      await showWelcomeDialog(context, profile: _profile);
+    }
+
     await _connections.load();
     await _library.start();
   }
@@ -88,12 +110,13 @@ class _HomePageState extends State<HomePage> {
     _chat.dispose();
     _library.dispose();
     _connections.dispose();
+    _profile.dispose();
     super.dispose();
   }
 
   Widget _bodyFor(int index) {
     return switch (index) {
-      0 => const TodayPage(),
+      0 => TodayPage(profile: _profile, library: _library),
       1 => ChatPage(chat: _chat),
       2 => FilesPage(
         connections: _connections,
@@ -102,7 +125,8 @@ class _HomePageState extends State<HomePage> {
         onOpenSources: () => setState(() => _selectedIndex = 3),
       ),
       3 => SourcesPage(connections: _connections),
-      _ => const PatternsPage(),
+      4 => const PatternsPage(),
+      _ => SettingsPage(profile: _profile),
     };
   }
 
@@ -188,6 +212,15 @@ class _Sidebar extends StatelessWidget {
                   onTap: () => onSelected(index),
                 );
               },
+            ),
+          ),
+          const Divider(height: 1, color: KandooColors.divider),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 8, 10, 12),
+            child: _NavTile(
+              section: kSettingsSection,
+              selected: selectedIndex == kSettingsIndex,
+              onTap: () => onSelected(kSettingsIndex),
             ),
           ),
         ],

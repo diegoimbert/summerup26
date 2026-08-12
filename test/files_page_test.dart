@@ -98,6 +98,18 @@ Future<LibraryController> _libraryHolding(
   return library;
 }
 
+/// A page filed away from a workspace rather than a file from this Mac.
+LibraryEntry _filedFromNotion(String id, String title, String organized) =>
+    LibraryEntry(
+      file: ScannedFile(
+        path: '/Projects/$title',
+        sourceName: 'Notion',
+        externalId: id,
+        modified: DateTime(2026, 8, 4),
+      ),
+      organizedPath: organized,
+    );
+
 LibraryEntry _filed(String path, String organized) => LibraryEntry(
   file: ScannedFile(
     path: path,
@@ -195,19 +207,11 @@ void main() {
     await tester.pumpAndSettle();
     expect(_sourcesOpened, 1);
 
-    // With nothing picked, the section shows the organized library — which
-    // here has nothing in it and no folders to fill it from.
-    expect(
-      find.text(
-        'Nothing to scan yet.\n'
-        'Connect a source under Sources, or give one folders.',
-      ),
-      findsOneWidget,
-    );
-    expect(
-      find.text('Nothing to scan yet — connect a source, or give one folders.'),
-      findsOneWidget,
-    );
+    // With nothing picked, the section shows the organized library. Notion is
+    // connected and needs no folders, so there is something to scan — just
+    // nothing scanned yet.
+    expect(find.text('Nothing organized yet'), findsOneWidget);
+    expect(find.text('Nothing scanned yet.'), findsOneWidget);
   });
 
   testWidgets('picking the open source again returns to the library', (
@@ -425,6 +429,58 @@ void main() {
     await tester.enterText(find.byType(TextField), '');
     await tester.pumpAndSettle();
     expect(find.text('Self'), findsOneWidget);
+  });
+
+  testWidgets('a page from a workspace opens in Notion', (tester) async {
+    tester.view.physicalSize = const Size(1400, 1600);
+    tester.view.devicePixelRatio = 2.0;
+    addTearDown(tester.view.reset);
+
+    final connections = ConnectionsController(store: _MemoryStore());
+    await connections.load();
+    final library = await _libraryHolding(connections, [
+      _filedFromNotion(
+        'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+        'Kick-off notes',
+        'Career/Projects/Kick-off notes',
+      ),
+    ]);
+    addTearDown(library.dispose);
+
+    _opened = _Opened();
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildKandooTheme(),
+        home: Scaffold(
+          body: FilesPage(
+            connections: connections,
+            library: library,
+            onOpenSources: () {},
+            openUrl: _opened.call,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Career'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Projects'));
+    await tester.pumpAndSettle();
+
+    await _doubleTap(tester, find.text('Kick-off notes'));
+    await tester.pumpAndSettle();
+
+    // A page is read where it lives, not downloaded to this Mac.
+    expect(_opened.urls, [
+      Uri.parse('https://www.notion.so/aaaaaaaabbbbccccddddeeeeeeeeeeee'),
+    ]);
+
+    await _rightClick(tester, find.text('Kick-off notes'));
+    await tester.pumpAndSettle();
+    expect(find.text('Open in Notion'), findsOneWidget);
+    // Nothing to show in Finder: it is not on this Mac.
+    expect(find.text('Show in Finder'), findsNothing);
   });
 
   testWidgets('searching steps out of a source being browsed', (tester) async {

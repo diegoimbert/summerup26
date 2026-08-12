@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 
 import '../sources/connections.dart';
 import '../sources/google_drive_api.dart';
+import '../sources/notion_api.dart';
 import '../sources/oauth.dart';
 import '../sources/source_catalog.dart';
 import 'drive_scanner.dart';
@@ -14,6 +15,7 @@ import 'file_scanner.dart';
 import 'file_watcher.dart';
 import 'library_store.dart';
 import 'library_tree.dart';
+import 'notion_scanner.dart';
 import 'organizer.dart';
 import 'source_scanner.dart';
 
@@ -92,10 +94,12 @@ class LibraryController extends ChangeNotifier {
   /// The file system is the whole disk, so it scans nothing until the user says
   /// where to look. A drive is the user's own and bounded by what they put in
   /// it, so an unset scope means all of it — which is what an unset scope means
-  /// everywhere else in Kandoo.
+  /// everywhere else in Kandoo. Notion is scoped by what the user shared with
+  /// the integration when they signed in, so it has no folders to wait for.
   static const Map<String, bool> scannableSources = {
     'file_system': true,
     'google_drive': false,
+    'notion': false,
   };
 
   LibraryStage _stage = LibraryStage.idle;
@@ -477,11 +481,17 @@ class LibraryController extends ChangeNotifier {
         return const FileSystemScanner();
 
       case 'google_drive':
-        final credentials = await connections.freshCredentials(source.id);
-        if (credentials == null) return null;
+        final drive = await connections.freshCredentials(source.id);
+        if (drive == null) return null;
         return GoogleDriveScanner(
-          api: GoogleDriveApi(accessToken: credentials.accessToken),
+          api: GoogleDriveApi(accessToken: drive.accessToken),
         );
+
+      case 'notion':
+        // Notion's tokens do not expire, so this is the one sign-in returned.
+        final notion = await connections.freshCredentials(source.id);
+        if (notion == null) return null;
+        return NotionScanner(api: NotionApi(accessToken: notion.accessToken));
 
       default:
         return null;

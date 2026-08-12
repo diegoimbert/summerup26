@@ -280,9 +280,13 @@ class _FilesPageState extends State<FilesPage> {
     final url = _urlFor(held);
     return [
       TreeAction(
-        label: held.file.sourceName == 'Google Drive'
-            ? 'Open in Drive'
-            : 'Open',
+        // What opening means depends on where the thing lives, so the menu
+        // says which.
+        label: switch (held.file.sourceName) {
+          'Google Drive' => 'Open in Drive',
+          'Notion' => 'Open in Notion',
+          _ => 'Open',
+        },
         icon: Icons.open_in_new,
         onSelected: () => _open(url, what: held.title),
       ),
@@ -301,12 +305,16 @@ class _FilesPageState extends State<FilesPage> {
     ];
   }
 
-  /// Where a filed away file actually is: on this Mac, or on a drive.
+  /// Where a filed away file actually is, which depends on where it came
+  /// from: this Mac, a drive, or a workspace.
   static Uri _urlFor(LibraryEntry entry) {
     final id = entry.file.externalId;
-    return id == null
-        ? localFileUrl(entry.file.path)
-        : driveItemUrl(id, isFolder: false);
+    if (id == null) return localFileUrl(entry.file.path);
+
+    return switch (entry.file.sourceName) {
+      'Notion' => notionPageUrl(id),
+      _ => driveItemUrl(id, isFolder: false),
+    };
   }
 
   @override

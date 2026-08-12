@@ -19,6 +19,11 @@ Uri enclosingFolderUrl(String path) {
   return Uri.file(cut <= 0 ? '/' : path.substring(0, cut));
 }
 
+/// Where a Notion page can be read, since a page is not a file to open. Notion
+/// takes its ids with or without the dashes; without is what its own links use.
+Uri notionPageUrl(String id) =>
+    Uri.parse('https://www.notion.so/${id.replaceAll('-', '')}');
+
 /// Where a Drive item can be looked at, since a Drive file is not on this Mac
 /// to open.
 Uri driveItemUrl(String id, {required bool isFolder}) => Uri.parse(

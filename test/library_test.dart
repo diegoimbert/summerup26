@@ -11,20 +11,23 @@ import 'package:overlay_app/library/file_watcher.dart';
 import 'package:overlay_app/library/library_controller.dart';
 import 'package:overlay_app/library/library_store.dart';
 import 'package:overlay_app/library/library_tree.dart';
+import 'package:overlay_app/library/notion_scanner.dart';
 import 'package:overlay_app/library/organizer.dart';
 import 'package:overlay_app/library/source_scanner.dart';
 import 'package:overlay_app/sources/connections.dart';
 import 'package:overlay_app/sources/credential_store.dart';
 import 'package:overlay_app/sources/google_drive_api.dart';
+import 'package:overlay_app/sources/notion_api.dart';
 
 /// Keeps folder scope in memory, so the tests never touch Application Support.
 class _MemoryStore extends CredentialStore {
-  _MemoryStore({this.folders = const {}});
+  _MemoryStore({this.folders = const {}, this.connections = const {}});
 
   final Map<String, List<String>> folders;
+  final Map<String, SourceCredentials> connections;
 
   @override
-  Future<Map<String, SourceCredentials>> readAll() async => const {};
+  Future<Map<String, SourceCredentials>> readAll() async => connections;
 
   @override
   Future<Map<String, List<String>>> readAllFolders() async => folders;
@@ -406,6 +409,258 @@ void main() {
         roots: const [],
         sourceName: 'Google Drive',
       );
+
+      expect(result.files, hasLength(2));
+      expect(result.truncated, isTrue);
+    });
+  });
+
+  group('NotionScanner', () {
+    /// One page as Notion's search returns it.
+    Map<String, dynamic> page(
+      String id,
+      String title, {
+      String? parent,
+      String parentType = 'page_id',
+      String edited = '2026-07-02T10:00:00.000Z',
+      bool archived = false,
+    }) => {
+      'object': 'page',
+      'id': id,
+      'archived': archived,
+      'last_edited_time': edited,
+      'parent': parent == null
+          ? {'type': 'workspace', 'workspace': true}
+          : {'type': parentType, parentType: parent},
+      'properties': {
+        'Name': {
+          'type': 'title',
+          'title': [
+            {'plain_text': title},
+          ],
+        },
+      },
+    };
+
+    Map<String, dynamic> database(String id, String title, {String? parent}) =>
+        {
+          'object': 'database',
+          'id': id,
+          'last_edited_time': '2026-07-02T10:00:00.000Z',
+          'parent': parent == null
+              ? {'type': 'workspace', 'workspace': true}
+              : {'type': 'page_id', 'page_id': parent},
+          'title': [
+            {'plain_text': title},
+          ],
+        };
+
+    /// A workspace that answers search with [pages], in as many pages of
+    /// results as [perRequest] requires.
+    MockClient workspaceOf(
+      List<Map<String, dynamic>> results, {
+      int perRequest = 100,
+      List<http.Request>? seen,
+    }) {
+      return MockClient((request) async {
+        seen?.add(request);
+        final cursor = (jsonDecode(request.body) as Map)['start_cursor'];
+        final start = cursor == null ? 0 : int.parse(cursor as String);
+        final end = (start + perRequest).clamp(0, results.length);
+
+        return http.Response(
+          jsonEncode({
+            'results': results.sublist(start, end),
+            'has_more': end < results.length,
+            'next_cursor': end < results.length ? '$end' : null,
+          }),
+          200,
+        );
+      });
+    }
+
+    test('a page is filed under the pages it lives in', () async {
+      final scanner = NotionScanner(
+        api: NotionApi(
+          accessToken: 'token',
+          client: workspaceOf([
+            page('p1', 'Projects'),
+            page('p2', 'Q3', parent: 'p1'),
+            page('p3', 'Kick-off notes', parent: 'p2'),
+          ]),
+        ),
+      );
+
+      final result = await scanner.scan(roots: const [], sourceName: 'Notion');
+
+      expect(result.files.map((file) => file.path), [
+        '/Projects',
+        '/Projects/Q3',
+        '/Projects/Q3/Kick-off notes',
+      ]);
+      expect(result.files.last.externalId, 'p3');
+      expect(result.files.last.sourceName, 'Notion');
+      expect(result.files.first.modified, DateTime.utc(2026, 7, 2, 10));
+    });
+
+    test(
+      'a database gives its pages a path without being filed itself',
+      () async {
+        final scanner = NotionScanner(
+          api: NotionApi(
+            accessToken: 'token',
+            client: workspaceOf([
+              database('d1', 'Reading list'),
+              page(
+                'p1',
+                'Designing Data-Intensive Applications',
+                parent: 'd1',
+                parentType: 'database_id',
+              ),
+            ]),
+          ),
+        );
+
+        final result = await scanner.scan(
+          roots: const [],
+          sourceName: 'Notion',
+        );
+
+        expect(result.files.map((file) => file.path), [
+          '/Reading list/Designing Data-Intensive Applications',
+        ]);
+      },
+    );
+
+    test(
+      'a page whose parent was not shared sits as high as Kandoo can see',
+      () async {
+        final scanner = NotionScanner(
+          api: NotionApi(
+            accessToken: 'token',
+            client: workspaceOf([page('p1', 'Loose note', parent: 'unshared')]),
+          ),
+        );
+
+        final result = await scanner.scan(
+          roots: const [],
+          sourceName: 'Notion',
+        );
+
+        expect(result.files.single.path, '/Loose note');
+      },
+    );
+
+    test('archived pages and untitled ones are handled', () async {
+      final scanner = NotionScanner(
+        api: NotionApi(
+          accessToken: 'token',
+          client: workspaceOf([
+            page('p1', 'Gone', archived: true),
+            page('p2', ''),
+            // A title with a slash would otherwise read as folders.
+            page('p3', 'Notes / drafts'),
+          ]),
+        ),
+      );
+
+      final result = await scanner.scan(roots: const [], sourceName: 'Notion');
+
+      expect(result.files.map((file) => file.path), [
+        '/Untitled',
+        '/Notes ∕ drafts',
+      ]);
+    });
+
+    test('a long workspace is read a page of results at a time', () async {
+      final seen = <http.Request>[];
+      final scanner = NotionScanner(
+        api: NotionApi(
+          accessToken: 'token',
+          client: workspaceOf(
+            [
+              for (var index = 0; index < 5; index += 1)
+                page('p$index', 'Page $index'),
+            ],
+            perRequest: 2,
+            seen: seen,
+          ),
+        ),
+      );
+
+      final result = await scanner.scan(roots: const [], sourceName: 'Notion');
+
+      expect(result.files, hasLength(5));
+      expect(seen, hasLength(3));
+      expect(seen.first.headers['Notion-Version'], isNotEmpty);
+      expect(seen.first.headers['Authorization'], 'Bearer token');
+    });
+
+    test('a rate limit is waited out rather than failed on', () async {
+      var calls = 0;
+      final scanner = NotionScanner(
+        api: NotionApi(
+          accessToken: 'token',
+          client: MockClient((request) async {
+            calls += 1;
+            if (calls == 1) {
+              return http.Response(
+                'slow down',
+                429,
+                headers: {'retry-after': '0'},
+              );
+            }
+            return http.Response(
+              jsonEncode({
+                'results': [page('p1', 'Survived')],
+                'has_more': false,
+              }),
+              200,
+            );
+          }),
+        ),
+      );
+
+      final result = await scanner.scan(roots: const [], sourceName: 'Notion');
+
+      expect(calls, 2);
+      expect(result.files.single.path, '/Survived');
+    });
+
+    test('an expired connection says to reconnect', () async {
+      final scanner = NotionScanner(
+        api: NotionApi(
+          accessToken: 'stale',
+          client: MockClient((request) async => http.Response('nope', 401)),
+        ),
+      );
+
+      await expectLater(
+        scanner.scan(roots: const [], sourceName: 'Notion'),
+        throwsA(
+          isA<ScanException>().having(
+            (error) => error.message,
+            'message',
+            'Notion needs connecting again from Sources.',
+          ),
+        ),
+      );
+    });
+
+    test('the scan stops at its ceiling', () async {
+      final scanner = NotionScanner(
+        api: NotionApi(
+          accessToken: 'token',
+          client: workspaceOf([
+            page('p1', 'One'),
+            page('p2', 'Two'),
+            page('p3', 'Three'),
+          ]),
+        ),
+        maxFiles: 2,
+      );
+
+      final result = await scanner.scan(roots: const [], sourceName: 'Notion');
 
       expect(result.files, hasLength(2));
       expect(result.truncated, isTrue);
@@ -1261,6 +1516,49 @@ void main() {
         expect(await store.readScan(), hasLength(2));
       },
     );
+
+    test('a connected Notion is scanned without waiting for folders', () async {
+      final connections = ConnectionsController(
+        store: _MemoryStore(
+          connections: {
+            'notion': const SourceCredentials(
+              sourceId: 'notion',
+              accessToken: 'token',
+              accountLabel: 'Kandoo workspace',
+            ),
+          },
+        ),
+      );
+      await connections.load();
+
+      final asked = <String>[];
+      final organizer = _FakeOrganizer();
+      final library = LibraryController(
+        connections: connections,
+        store: store,
+        scanners: (source) async {
+          asked.add(source.id);
+          return _FakeScanner([
+            ScannedFile(
+              path: '/Projects/Q3/Kick-off notes',
+              sourceName: 'Notion',
+              externalId: 'p3',
+            ),
+          ]);
+        },
+        organizer: organizer,
+      );
+      addTearDown(library.dispose);
+
+      expect(library.canScan, isTrue);
+      await library.refresh();
+
+      // The file system has no folders, so it waits; Notion is scoped by what
+      // was shared with the integration and does not.
+      expect(asked, ['notion']);
+      expect(library.entries.single.file.externalId, 'p3');
+      expect(library.entries.single.file.sourceName, 'Notion');
+    });
 
     test('a source with no folders configured is left alone', () async {
       final scanner = _FakeScanner([_file('/a.pdf')]);

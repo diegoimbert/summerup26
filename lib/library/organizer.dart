@@ -245,7 +245,8 @@ Rules:
   neighbour. Aim for categories of a few files each.
 - Rewrite the display name so a person can read it: expand abbreviations, fix
   casing and separators, drop noise like "final", "v3", "copy" and dates that
-  are already metadata. Keep the file extension.
+  are already metadata. Keep the file extension where there is one; a page from
+  a workspace has none, and inventing one would be a lie about what it is.
 - Judge from the whole path, not just the file name: the folders a file sits in
   usually say what it is.
 - Never invent files, never drop files, never return an index twice.

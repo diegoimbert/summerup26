@@ -12,17 +12,20 @@
 	<key>com.apple.security.network.client</key>
 	<true/>
 	<!--
-		Browsing the folders the user typed into the File System source. They are
-		entered as paths rather than picked through an open panel, so the sandbox
-		grants nothing on its own and every read is refused without this.
+		Reading the folders the user typed into the File System source, and
+		writing to them: Auto-organize moves their files into the folders the
+		library says they belong in, which means creating folders and renaming
+		files where they already live. Paths are entered as text rather than
+		picked through an open panel, so the sandbox grants nothing on its own
+		and every read and every move is refused without this.
 
 		A temporary exception is what makes typed paths work at all; it is also
 		what the App Store refuses, so shipping there means moving folder choice
 		to NSOpenPanel and holding security-scoped bookmarks instead.
 	-->
-	<key>com.apple.security.files.user-selected.read-only</key>
+	<key>com.apple.security.files.user-selected.read-write</key>
 	<true/>
-	<key>com.apple.security.temporary-exception.files.absolute-path.read-only</key>
+	<key>com.apple.security.temporary-exception.files.absolute-path.read-write</key>
 	<array>
 		<string>/</string>
 	</array>

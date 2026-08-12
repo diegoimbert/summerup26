@@ -165,6 +165,32 @@ void main() {
       );
     });
 
+    test('a folder it cannot make says why, rather than just that', () async {
+      // A file where a folder has to go: the commonest way a move fails that
+      // is nothing to do with permissions.
+      await File('${home.path}/Finance').writeAsString('not a folder');
+      final file = File('${home.path}/tax.pdf');
+      await file.writeAsString('a tax return');
+
+      await expectLater(
+        const FileSystemOrganizer().move(
+          ScannedFile(path: file.path, sourceName: 'File System'),
+          root: home.path,
+          relative: 'Finance/Tax return.pdf',
+        ),
+        throwsA(
+          isA<OrganizeFailure>().having(
+            (error) => error.message,
+            'message',
+            allOf(contains('Finance'), contains('already in the way')),
+          ),
+        ),
+      );
+
+      // And the file it could not file is still where it was.
+      expect(await file.exists(), isTrue);
+    });
+
     test('a file outside every configured folder is not moved', () {
       expect(
         () => const FileSystemOrganizer().move(

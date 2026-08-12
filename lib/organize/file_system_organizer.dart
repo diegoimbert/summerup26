@@ -49,8 +49,10 @@ class FileSystemOrganizer extends SourceOrganizer {
 
     try {
       await folder.create(recursive: true);
-    } on FileSystemException {
-      throw OrganizeFailure('Kandoo could not make the folder ${folder.path}.');
+    } on FileSystemException catch (error) {
+      throw OrganizeFailure(
+        'Could not make the folder ${folder.path}: ${_reasonFor(error)}',
+      );
     }
 
     final destination = await _freePath(wanted);
@@ -65,9 +67,7 @@ class FileSystemOrganizer extends SourceOrganizer {
         await source.delete();
       } on FileSystemException catch (error) {
         throw OrganizeFailure(
-          error.osError?.errorCode == 13
-              ? 'Kandoo is not allowed to move ${file.name}.'
-              : 'Could not move ${file.name}: ${error.osError?.message ?? error.message}',
+          'Could not move ${file.name}: ${_reasonFor(error)}',
         );
       }
     }
@@ -105,6 +105,26 @@ class FileSystemOrganizer extends SourceOrganizer {
 
     throw OrganizeFailure('There is already a file called ${wanted.split('/').last} there.');
   }
+
+  /// Why the disk said no, in words that say what to do about it.
+  ///
+  /// Worth the trouble because the likeliest answer by far is the sandbox:
+  /// Kandoo is allowed to read the user's folders because its entitlements say
+  /// so, and it can write to them for the same reason — a build whose
+  /// entitlements grant only reads refuses every move, and should say that
+  /// rather than leaving the user to guess at a folder that looks fine in
+  /// Finder.
+  static String _reasonFor(FileSystemException error) =>
+      switch (error.osError?.errorCode) {
+        1 || 13 =>
+          'Kandoo is not allowed to write there. If this is a build of Kandoo '
+              'without write access to your folders, nothing it does here will '
+              'stick.',
+        17 || 20 => 'Something that is not a folder is already in the way.',
+        28 => 'There is no room left on the disk.',
+        30 => 'That disk is read-only.',
+        _ => error.osError?.message ?? error.message,
+      };
 
   static Future<bool> _exists(String path) async =>
       await FileSystemEntity.type(path) != FileSystemEntityType.notFound;

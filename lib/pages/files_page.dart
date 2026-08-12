@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../library/library_controller.dart';
+import '../library/library_store.dart';
 import '../sources/connections.dart';
 import '../sources/file_system_browser.dart';
 import '../sources/google_drive_api.dart';
 import '../sources/google_drive_browser.dart';
+import '../sources/item_actions.dart';
 import '../sources/source_catalog.dart';
 import '../theme.dart';
 import '../widgets/page_shell.dart';
@@ -62,10 +65,15 @@ class FilesPage extends StatefulWidget {
     required this.connections,
     required this.library,
     this.treeLoader = defaultTreeLoader,
+    this.openUrl = openWithSystem,
   });
 
   final ConnectionsController connections;
   final LibraryController library;
+
+  /// How a file or a link is handed to the desktop. Replaced in tests, which
+  /// have no desktop.
+  final UrlOpener openUrl;
 
   /// Where a source's raw tree comes from. Overridden in tests, which cannot
   /// wait on real disk reads.
@@ -123,6 +131,124 @@ class _FilesPageState extends State<FilesPage> {
     });
   }
 
+  /// Opens what a row stands for: a local file in whatever handles it, a Drive
+  /// item in the browser.
+  Future<void> _open(Uri url, {required String what}) async {
+    final opened = await widget.openUrl(url);
+    if (opened || !mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Could not open $what.'),
+        behavior: SnackBarBehavior.floating,
+        width: 320,
+      ),
+    );
+  }
+
+  Future<void> _copy(String value, {required String what}) async {
+    await Clipboard.setData(ClipboardData(text: value));
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('$what copied.'),
+        behavior: SnackBarBehavior.floating,
+        width: 320,
+      ),
+    );
+  }
+
+  /// What a row of a source's own tree offers.
+  ///
+  /// The file system has files to open and folders to show; Drive has neither
+  /// on this Mac, so its rows lead to the browser instead.
+  List<TreeAction> _sourceActions(SourceDescriptor source, TreeEntry entry) {
+    if (source.id == 'google_drive') {
+      final url = driveItemUrl(entry.id, isFolder: entry.isFolder);
+      return [
+        TreeAction(
+          label: 'Open in Drive',
+          icon: Icons.open_in_new,
+          onSelected: () => _open(url, what: entry.label),
+        ),
+        TreeAction(
+          label: 'Copy link',
+          icon: Icons.link,
+          onSelected: () => _copy('$url', what: 'Link'),
+        ),
+      ];
+    }
+
+    return [
+      if (!entry.isFolder)
+        TreeAction(
+          label: 'Open',
+          icon: Icons.open_in_new,
+          onSelected: () => _open(localFileUrl(entry.id), what: entry.label),
+        ),
+      TreeAction(
+        label: 'Show in Finder',
+        icon: Icons.folder_open_outlined,
+        onSelected: () =>
+            _open(enclosingFolderUrl(entry.id), what: 'that folder'),
+      ),
+      TreeAction(
+        label: 'Copy path',
+        icon: Icons.content_copy,
+        onSelected: () => _copy(entry.id, what: 'Path'),
+      ),
+    ];
+  }
+
+  /// What a row of the organized library offers.
+  ///
+  /// A folder there exists only in the library, so it has nothing to open; a
+  /// file is a real file on a real source, and acts like one.
+  List<TreeAction> _libraryActions(TreeEntry entry) {
+    final held = entry.payload;
+    if (held is! LibraryEntry) {
+      return [
+        TreeAction(
+          label: 'Copy folder path',
+          icon: Icons.content_copy,
+          onSelected: () => _copy(entry.id, what: 'Path'),
+        ),
+      ];
+    }
+
+    final url = _urlFor(held);
+    return [
+      TreeAction(
+        label: held.file.sourceName == 'Google Drive'
+            ? 'Open in Drive'
+            : 'Open',
+        icon: Icons.open_in_new,
+        onSelected: () => _open(url, what: held.title),
+      ),
+      if (held.file.externalId == null)
+        TreeAction(
+          label: 'Show in Finder',
+          icon: Icons.folder_open_outlined,
+          onSelected: () =>
+              _open(enclosingFolderUrl(held.file.path), what: 'that folder'),
+        ),
+      TreeAction(
+        label: 'Copy path',
+        icon: Icons.content_copy,
+        onSelected: () => _copy(held.file.path, what: 'Path'),
+      ),
+    ];
+  }
+
+  /// Where a filed away file actually is: on this Mac, or on a drive.
+  static Uri _urlFor(LibraryEntry entry) {
+    final id = entry.file.externalId;
+    return id == null
+        ? localFileUrl(entry.file.path)
+        : driveItemUrl(id, isFolder: false);
+  }
+
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
@@ -163,7 +289,16 @@ class _FilesPageState extends State<FilesPage> {
     final source = _source;
     // Nothing picked out of the grid means the organized library, which is the
     // point of the section.
-    if (source == null) return _LibraryView(library: widget.library);
+    if (source == null) {
+      return _LibraryView(
+        library: widget.library,
+        onActivate: (entry) {
+          final held = entry.payload;
+          if (held is LibraryEntry) _open(_urlFor(held), what: held.title);
+        },
+        actionsFor: _libraryActions,
+      );
+    }
 
     if (!kBrowsableSources.contains(source.id)) {
       return EmptySection(
@@ -202,6 +337,13 @@ class _FilesPageState extends State<FilesPage> {
             // than inheriting the previous folder's expansions.
             key: ValueKey('${source.id}:$root'),
             loadChildren: widget.treeLoader(source, root, widget.connections),
+            onActivate: (entry) => _open(
+              source.id == 'google_drive'
+                  ? driveItemUrl(entry.id, isFolder: false)
+                  : localFileUrl(entry.id),
+              what: entry.label,
+            ),
+            actionsFor: (entry) => _sourceActions(source, entry),
           ),
         ),
       ],
@@ -337,9 +479,15 @@ class ScanStatusStrip extends StatelessWidget {
 
 /// The organized library, or an explanation of why there is none yet.
 class _LibraryView extends StatelessWidget {
-  const _LibraryView({required this.library});
+  const _LibraryView({
+    required this.library,
+    required this.onActivate,
+    required this.actionsFor,
+  });
 
   final LibraryController library;
+  final ValueChanged<TreeEntry> onActivate;
+  final List<TreeAction> Function(TreeEntry) actionsFor;
 
   @override
   Widget build(BuildContext context) {
@@ -349,6 +497,8 @@ class _LibraryView extends StatelessWidget {
         // on disk does not close everything the user had open.
         revision: library.revision,
         loadChildren: library.tree.childrenOf,
+        onActivate: onActivate,
+        actionsFor: actionsFor,
         emptyMessage: 'Nothing filed here',
       );
     }

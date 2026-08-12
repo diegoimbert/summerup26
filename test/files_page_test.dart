@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:overlay_app/library/library_controller.dart';
@@ -57,6 +58,18 @@ class _FakeTree {
   }
 }
 
+/// Where the page asked the desktop to look, instead of a desktop.
+class _Opened {
+  final List<Uri> urls = [];
+
+  Future<bool> call(Uri url) async {
+    urls.add(url);
+    return true;
+  }
+}
+
+late _Opened _opened;
+
 Future<_FakeTree> _pumpFiles(WidgetTester tester, CredentialStore store) async {
   tester.view.physicalSize = const Size(1400, 1600);
   tester.view.devicePixelRatio = 2.0;
@@ -71,6 +84,7 @@ Future<_FakeTree> _pumpFiles(WidgetTester tester, CredentialStore store) async {
   addTearDown(library.dispose);
 
   final tree = _FakeTree();
+  _opened = _Opened();
   await tester.pumpWidget(
     MaterialApp(
       theme: buildKandooTheme(),
@@ -79,12 +93,30 @@ Future<_FakeTree> _pumpFiles(WidgetTester tester, CredentialStore store) async {
           connections: connections,
           library: library,
           treeLoader: tree.loaderFor,
+          openUrl: _opened.call,
         ),
       ),
     ),
   );
   await tester.pumpAndSettle();
   return tree;
+}
+
+/// Two clicks close enough together to count as one gesture.
+Future<void> _doubleTap(WidgetTester tester, Finder target) async {
+  await tester.tap(target);
+  await tester.pump(kDoubleTapMinTime);
+  await tester.tap(target);
+}
+
+Future<void> _rightClick(WidgetTester tester, Finder target) async {
+  final gesture = await tester.startGesture(
+    tester.getCenter(target),
+    kind: PointerDeviceKind.mouse,
+    buttons: kSecondaryMouseButton,
+  );
+  await gesture.up();
+  await gesture.removePointer();
 }
 
 void main() {
@@ -172,6 +204,112 @@ void main() {
 
     // With nothing to choose between, there is no way back to a choice.
     expect(find.text('Change folder'), findsNothing);
+  });
+
+  testWidgets('double-clicking a file opens it', (tester) async {
+    await _pumpFiles(
+      tester,
+      _MemoryStore(
+        folders: {
+          'file_system': ['/Users/diegoimbert/Desktop'],
+        },
+      ),
+    );
+
+    await tester.tap(find.byTooltip('File System'));
+    await tester.pumpAndSettle();
+
+    // One click does nothing to a file; it takes two.
+    await tester.tap(find.text('todo.md'));
+    await tester.pumpAndSettle();
+    expect(_opened.urls, isEmpty);
+
+    await _doubleTap(tester, find.text('todo.md'));
+    await tester.pumpAndSettle();
+
+    expect(_opened.urls, [Uri.file('/Users/diegoimbert/Desktop/todo.md')]);
+  });
+
+  testWidgets('a folder answers clicks rather than double-clicks', (
+    tester,
+  ) async {
+    await _pumpFiles(
+      tester,
+      _MemoryStore(
+        folders: {
+          'file_system': ['/Users/diegoimbert/Desktop'],
+        },
+      ),
+    );
+
+    await tester.tap(find.byTooltip('File System'));
+    await tester.pumpAndSettle();
+
+    // One click opens it, without waiting to see whether a second is coming.
+    await tester.tap(find.text('Invoices'));
+    await tester.pumpAndSettle();
+    expect(find.text('march.pdf'), findsOneWidget);
+
+    // So a double-click is two answers — closed, then open again — rather
+    // than one gesture the folder waits for.
+    await _doubleTap(tester, find.text('Invoices'));
+    await tester.pumpAndSettle();
+    expect(find.text('march.pdf'), findsOneWidget);
+
+    // And a folder is never handed to the desktop to open.
+    expect(_opened.urls, isEmpty);
+  });
+
+  testWidgets('right-clicking a file offers what can be done with it', (
+    tester,
+  ) async {
+    await _pumpFiles(
+      tester,
+      _MemoryStore(
+        folders: {
+          'file_system': ['/Users/diegoimbert/Desktop'],
+        },
+      ),
+    );
+
+    await tester.tap(find.byTooltip('File System'));
+    await tester.pumpAndSettle();
+
+    await _rightClick(tester, find.text('todo.md'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Open'), findsOneWidget);
+    expect(find.text('Show in Finder'), findsOneWidget);
+    expect(find.text('Copy path'), findsOneWidget);
+
+    await tester.tap(find.text('Show in Finder'));
+    await tester.pumpAndSettle();
+
+    // Finder shows a file by opening the folder it is in.
+    expect(_opened.urls, [Uri.file('/Users/diegoimbert/Desktop')]);
+  });
+
+  testWidgets('a folder has no Open, since there is nothing to open', (
+    tester,
+  ) async {
+    await _pumpFiles(
+      tester,
+      _MemoryStore(
+        folders: {
+          'file_system': ['/Users/diegoimbert/Desktop'],
+        },
+      ),
+    );
+
+    await tester.tap(find.byTooltip('File System'));
+    await tester.pumpAndSettle();
+
+    await _rightClick(tester, find.text('Invoices'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Open'), findsNothing);
+    expect(find.text('Show in Finder'), findsOneWidget);
+    expect(find.text('Copy path'), findsOneWidget);
   });
 
   testWidgets('several folders are chosen between first', (tester) async {

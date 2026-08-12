@@ -12,6 +12,7 @@ class TreeEntry {
     this.icon,
     this.detail,
     this.trailing,
+    this.payload,
   });
 
   /// Stable identity, and what the loader is handed to fetch children. A path
@@ -34,6 +35,24 @@ class TreeEntry {
   /// Drawn after [detail], for what a row is better off showing than saying —
   /// the brand marks of the sources behind it, typically.
   final Widget? trailing;
+
+  /// Whatever the owner needs to act on this row: the entry a library row
+  /// stands for, say. The viewer never looks inside it.
+  final Object? payload;
+}
+
+/// One line of a row's context menu.
+@immutable
+class TreeAction {
+  const TreeAction({
+    required this.label,
+    required this.icon,
+    required this.onSelected,
+  });
+
+  final String label;
+  final IconData icon;
+  final VoidCallback onSelected;
 }
 
 /// Thrown by a loader when a folder cannot be listed. The message is shown in
@@ -67,6 +86,8 @@ class TreeViewer extends StatefulWidget {
     super.key,
     required this.loadChildren,
     this.revision = 0,
+    this.onActivate,
+    this.actionsFor,
     this.emptyMessage = 'This folder is empty',
     this.padding = const EdgeInsets.symmetric(vertical: 6),
   });
@@ -79,6 +100,13 @@ class TreeViewer extends StatefulWidget {
   /// what lets a file appearing on disk show up where it belongs without
   /// closing everything the user had unfolded.
   final int revision;
+
+  /// A file was double-clicked. Folders open on a single click instead, so
+  /// this is never called for one.
+  final ValueChanged<TreeEntry>? onActivate;
+
+  /// What a row offers on a right-click. Return nothing for no menu.
+  final List<TreeAction> Function(TreeEntry entry)? actionsFor;
 
   /// Shown when a folder turns out to hold nothing.
   final String emptyMessage;
@@ -344,6 +372,13 @@ class _TreeViewerState extends State<TreeViewer> with TickerProviderStateMixin {
               expanded: row.open,
               loading: row.loading,
               onTap: row.entry.isFolder ? () => _toggle(row.entry) : null,
+              onActivate: row.entry.isFolder
+                  ? null
+                  : switch (widget.onActivate) {
+                      final activate? => () => activate(row.entry),
+                      null => null,
+                    },
+              actions: widget.actionsFor?.call(row.entry) ?? const [],
             ),
             _NoteRow() => _NoteTile(row: row),
           },
@@ -447,6 +482,8 @@ class _TreeTile extends StatefulWidget {
     required this.expanded,
     required this.loading,
     required this.onTap,
+    required this.onActivate,
+    required this.actions,
   });
 
   final TreeEntry entry;
@@ -459,12 +496,52 @@ class _TreeTile extends StatefulWidget {
 
   final VoidCallback? onTap;
 
+  /// Double-clicking a file. Only files get one: a folder answers every click
+  /// by toggling, and registering both gestures on it would make each click
+  /// wait to find out whether a second was coming.
+  final VoidCallback? onActivate;
+
+  final List<TreeAction> actions;
+
   @override
   State<_TreeTile> createState() => _TreeTileState();
 }
 
 class _TreeTileState extends State<_TreeTile> {
   bool _hovered = false;
+
+  /// Opens the row's menu where the pointer is.
+  Future<void> _showActions(Offset position) async {
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+
+    final chosen = await showMenu<TreeAction>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        position.dx,
+        position.dy,
+        overlay.size.width - position.dx,
+        overlay.size.height - position.dy,
+      ),
+      color: KandooColors.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
+      items: [
+        for (final action in widget.actions)
+          PopupMenuItem<TreeAction>(
+            value: action,
+            height: 36,
+            child: Row(
+              children: [
+                Icon(action.icon, size: 15, color: KandooColors.textSecondary),
+                const SizedBox(width: 10),
+                Text(action.label, style: const TextStyle(fontSize: 13)),
+              ],
+            ),
+          ),
+      ],
+    );
+
+    chosen?.onSelected();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -476,13 +553,17 @@ class _TreeTileState extends State<_TreeTile> {
             : Icons.insert_drive_file_outlined);
 
     return MouseRegion(
-      cursor: entry.isFolder
+      cursor: entry.isFolder || widget.onActivate != null
           ? SystemMouseCursors.click
           : SystemMouseCursors.basic,
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() => _hovered = false),
       child: GestureDetector(
         onTap: widget.onTap,
+        onDoubleTap: widget.onActivate,
+        onSecondaryTapUp: widget.actions.isEmpty
+            ? null
+            : (details) => _showActions(details.globalPosition),
         behavior: HitTestBehavior.opaque,
         child: Container(
           height: _rowHeight,

@@ -80,6 +80,7 @@ class LibraryTree {
             label: entry.title,
             detail: modified == null ? null : _isoDate(modified),
             trailing: SourceMarks(sourceNames: [entry.file.sourceName]),
+            payload: entry,
           ),
         );
       }

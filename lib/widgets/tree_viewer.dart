@@ -171,12 +171,6 @@ class _TreeViewerState extends State<TreeViewer> with TickerProviderStateMixin {
       reverseCurve: Curves.easeInCubic,
     );
 
-    // Someone who has turned animations off is asking not to be kept waiting.
-    if (MediaQuery.maybeOf(context)?.disableAnimations ?? false) {
-      setState(() => controller.value = open ? 1 : 0);
-      return;
-    }
-
     if (open) {
       controller.forward();
     } else {

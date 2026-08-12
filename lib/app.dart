@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'chat/chat_controller.dart';
 import 'library/library_controller.dart';
 import 'pages/chat_page.dart';
 import 'pages/files_page.dart';
@@ -59,6 +60,13 @@ class _HomePageState extends State<HomePage> {
     connections: _connections,
   );
 
+  /// Held here rather than in the section, so a conversation survives a trip to
+  /// Files and back.
+  late final ChatController _chat = ChatController(
+    library: _library,
+    connections: _connections,
+  );
+
   int _selectedIndex = 0;
 
   @override
@@ -77,6 +85,7 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    _chat.dispose();
     _library.dispose();
     _connections.dispose();
     super.dispose();
@@ -85,7 +94,7 @@ class _HomePageState extends State<HomePage> {
   Widget _bodyFor(int index) {
     return switch (index) {
       0 => const TodayPage(),
-      1 => const ChatPage(),
+      1 => ChatPage(chat: _chat),
       2 => FilesPage(
         connections: _connections,
         library: _library,

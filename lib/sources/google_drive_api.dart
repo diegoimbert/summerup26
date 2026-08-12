@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
@@ -18,6 +19,28 @@ class DriveItem {
   final String name;
   final bool isFolder;
   final DateTime? modified;
+}
+
+/// What Drive knows about one item, which is what says how to fetch it: a
+/// Google Doc has to be exported, anything else can be downloaded as it is.
+class DriveFileInfo {
+  const DriveFileInfo({
+    required this.id,
+    required this.name,
+    required this.mimeType,
+    this.size,
+  });
+
+  final String id;
+  final String name;
+  final String mimeType;
+
+  /// Bytes, when Drive reports any. A Google Doc has no size of its own.
+  final int? size;
+
+  /// Whether this is one of Google's own formats, which exist only inside
+  /// Drive and have to be exported into something else to be read.
+  bool get isGoogleFormat => mimeType.startsWith('application/vnd.google-apps');
 }
 
 /// A page of a folder's contents.
@@ -117,6 +140,46 @@ class GoogleDriveApi {
     return parent;
   }
 
+  /// What Drive holds about one item.
+  Future<DriveFileInfo> info(String id) async {
+    final body = await _get({
+      'fields': 'id, name, mimeType, size',
+    }, path: id);
+
+    return DriveFileInfo(
+      id: body['id'] as String? ?? id,
+      name: body['name'] as String? ?? 'Untitled',
+      mimeType: body['mimeType'] as String? ?? '',
+      size: int.tryParse('${body['size']}'),
+    );
+  }
+
+  /// The bytes of a file, at most [maxBytes] of them.
+  ///
+  /// The cap is asked for as a range rather than trimmed afterwards, so a huge
+  /// file costs a huge download only if somebody asks for one.
+  Future<Uint8List> download(String id, {required int maxBytes}) => _fetch(
+    _endpoint.replace(
+      path: '${_endpoint.path}/$id',
+      queryParameters: {'alt': 'media'},
+    ),
+    headers: {'Range': 'bytes=0-${maxBytes - 1}'},
+  );
+
+  /// A Google-format file — a Doc, a Sheet — converted to something readable.
+  ///
+  /// These have no bytes to download: Drive only hands them over as one of the
+  /// formats it can export them into.
+  Future<String> exportText(String id, {required String mimeType}) async {
+    final bytes = await _fetch(
+      _endpoint.replace(
+        path: '${_endpoint.path}/$id/export',
+        queryParameters: {'mimeType': mimeType},
+      ),
+    );
+    return utf8.decode(bytes, allowMalformed: true);
+  }
+
   /// Trims a folder the user typed to bare segments: `/Work/Invoices/` and
   /// `Work/Invoices` name the same folder, and `/` is the drive itself.
   static String normalisePath(String path) {
@@ -127,25 +190,46 @@ class GoogleDriveApi {
     return segments.isEmpty ? '' : '/${segments.join('/')}';
   }
 
-  Future<Map<String, dynamic>> _get(Map<String, String> parameters) async {
+  /// One JSON call: the file list by default, or one item when [path] names it.
+  Future<Map<String, dynamic>> _get(
+    Map<String, String> parameters, {
+    String? path,
+  }) async {
+    final url = _endpoint.replace(
+      path: path == null ? null : '${_endpoint.path}/$path',
+      queryParameters: parameters,
+    );
+
+    try {
+      return (jsonDecode(utf8.decode(await _fetch(url))) as Map)
+          .cast<String, dynamic>();
+    } on DriveException {
+      rethrow;
+    } catch (_) {
+      throw const DriveException('Google Drive returned something unreadable.');
+    }
+  }
+
+  /// One call, as bytes. Everything Drive is asked for comes through here, so
+  /// there is one place a failure is turned into something worth showing.
+  Future<Uint8List> _fetch(Uri url, {Map<String, String>? headers}) async {
     final http.Response response;
     try {
-      response = await _client.get(
-        _endpoint.replace(queryParameters: parameters),
-        headers: {'Authorization': 'Bearer $accessToken'},
-      );
+      response = await _client.get(url, headers: {
+        'Authorization': 'Bearer $accessToken',
+        ...?headers,
+      });
     } catch (error) {
       throw DriveException('Could not reach Google Drive: $error');
     }
 
-    if (response.statusCode != 200) throw DriveException(_failureFor(response));
-
-    try {
-      return (jsonDecode(utf8.decode(response.bodyBytes)) as Map)
-          .cast<String, dynamic>();
-    } catch (_) {
-      throw const DriveException('Google Drive returned something unreadable.');
+    // 206 is the answer to a ranged request, which is how a large file is
+    // fetched without taking all of it.
+    if (response.statusCode != 200 && response.statusCode != 206) {
+      throw DriveException(_failureFor(response));
     }
+
+    return response.bodyBytes;
   }
 
   static DriveItem? _itemFrom(Map<String, dynamic> raw) {

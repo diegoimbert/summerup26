@@ -36,6 +36,9 @@ final Map<String, OAuthProvider> kOAuthProviders = {
     usePkce: false,
     tokenAuthStyle: TokenAuthStyle.basicAuth,
     extraAuthParameters: const {'owner': 'user'},
+    // Notion rejects a redirect URI that spells the loopback address as an IP,
+    // so this one has to say localhost. It resolves to the same listener.
+    redirectHost: 'localhost',
   ),
 };
 

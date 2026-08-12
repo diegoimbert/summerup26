@@ -55,6 +55,7 @@ class OAuthProvider {
     this.usePkce = true,
     this.tokenAuthStyle = TokenAuthStyle.requestBody,
     this.extraAuthParameters = const {},
+    this.redirectHost = '127.0.0.1',
     this.redirectPort = 53682,
   });
 
@@ -65,6 +66,13 @@ class OAuthProvider {
   final TokenAuthStyle tokenAuthStyle;
   final Map<String, String> extraAuthParameters;
 
+  /// How the loopback address is spelled in the redirect URI.
+  ///
+  /// Both spellings reach the same listener, but providers differ on which they
+  /// will register: Google prefers the literal address, while Notion refuses
+  /// redirect URIs containing an IP address at all.
+  final String redirectHost;
+
   /// The loopback port to listen on.
   ///
   /// Fixed rather than ephemeral because providers match the redirect URI
@@ -73,7 +81,7 @@ class OAuthProvider {
   final int redirectPort;
 
   /// The address the user must register with the provider.
-  String get redirectUri => 'http://127.0.0.1:$redirectPort';
+  String get redirectUri => 'http://$redirectHost:$redirectPort';
 }
 
 /// Runs the OAuth 2.0 authorization-code flow against a loopback redirect.

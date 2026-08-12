@@ -5,7 +5,7 @@
   "GOOGLE_DRIVE_CLIENT_ID": "xxxxxxxx.apps.googleusercontent.com",
   "GOOGLE_DRIVE_CLIENT_SECRET": "GOCSPX-xxxxxxxxxxxxxxxx",
 
-  "_notion": "Notion integrations > Public integration. Notion supports no PKCE and authenticates the token exchange with HTTP Basic client_id:client_secret, so the secret cannot ship inside the app. Point NOTION_TOKEN_PROXY at a small endpoint you host that holds the secret, accepts {code, redirect_uri} as JSON and returns Notion's token response verbatim.",
+  "_notion": "Notion integrations > Public integration. Register http://localhost:53682 as the only redirect URI, spelled exactly so: Notion matches it verbatim and rejects redirect URIs written as an IP address. Notion supports no PKCE and authenticates the token exchange with HTTP Basic client_id:client_secret, so the secret cannot ship inside the app. Point NOTION_TOKEN_PROXY at a small endpoint you host that holds the secret, accepts {code, redirect_uri} as JSON and returns Notion's token response verbatim, passing redirect_uri through unchanged.",
   "NOTION_CLIENT_ID": "00000000-0000-0000-0000-000000000000",
   "NOTION_TOKEN_PROXY": "https://api.example.com/notion/token",
 

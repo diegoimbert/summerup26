@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
@@ -9,6 +11,7 @@ import '../sources/oauth.dart';
 import '../sources/source_catalog.dart';
 import 'drive_scanner.dart';
 import 'file_scanner.dart';
+import 'file_watcher.dart';
 import 'library_store.dart';
 import 'library_tree.dart';
 import 'organizer.dart';
@@ -53,15 +56,31 @@ class LibraryController extends ChangeNotifier {
     LibraryStore? store,
     SourceScannerFactory? scanners,
     DeepSeekOrganizer? organizer,
+    SourceWatcher? watcher,
   }) : _store = store ?? const LibraryStore(),
-       _organizer = organizer ?? DeepSeekOrganizer() {
+       _organizer = organizer ?? DeepSeekOrganizer(),
+       _watcher = watcher ?? FileSystemWatcher() {
     _scannerFor = scanners ?? _defaultScannerFor;
+    connections.addListener(_onConnectionsChanged);
   }
 
   final ConnectionsController connections;
   final LibraryStore _store;
   final DeepSeekOrganizer _organizer;
+  final SourceWatcher _watcher;
   late final SourceScannerFactory _scannerFor;
+
+  StreamSubscription<Set<String>>? _changes;
+  List<String> _watched = const [];
+
+  /// A batch bigger than this is a checkout or an unzip, not the user saving
+  /// something. Filing it would cost a request per hundred files for a change
+  /// they did not make on purpose, so it waits for a Rescan.
+  static const int _maxAutoFiled = 100;
+
+  /// What the scan stamps on everything it finds on this Mac.
+  static final String _fileSystemName =
+      sourceWithId('file_system')?.name ?? 'File System';
 
   /// The sources this can read, and whether each waits to be pointed at
   /// folders first.
@@ -114,6 +133,16 @@ class LibraryController extends ChangeNotifier {
   LibraryTree _tree = LibraryTree.from(const []);
   LibraryTree get tree => _tree;
 
+  /// Bumped whenever the library's contents change, so a tree already on screen
+  /// knows to pick the change up without being rebuilt from scratch.
+  int _revision = 0;
+  int get revision => _revision;
+
+  /// How many files are being filed into an existing library right now, for
+  /// the progress line.
+  int _filingCount = 0;
+  int get filingCount => _filingCount;
+
   String _fingerprint = '';
 
   /// Whether there is any source to read: one that is connected, and pointed
@@ -129,8 +158,209 @@ class LibraryController extends ChangeNotifier {
   /// filed.
   Future<void> start() async {
     await load();
-    if (_entries.isNotEmpty) return;
-    await refresh();
+    if (_entries.isEmpty) await refresh();
+    _watchFolders();
+  }
+
+  /// Watches the folders in scope, so a file the user adds or removes while
+  /// Kandoo is open is picked up without a full rescan.
+  ///
+  /// Only the file system for now: the drives would need polling or a push
+  /// channel, which is a different piece of work.
+  void _watchFolders() {
+    final roots = [
+      for (final target in _scanTargets())
+        if (target.source.id == 'file_system') ...target.folders,
+    ];
+
+    if (_listEquals(roots, _watched) && _changes != null) return;
+    _watched = roots;
+
+    _changes?.cancel();
+    _changes = null;
+    if (roots.isEmpty) {
+      _watcher.stop();
+      return;
+    }
+
+    _changes = _watcher.watch(roots).listen(_onChanged);
+  }
+
+  /// Folders can be added or dropped in Sources while the app is open.
+  void _onConnectionsChanged() {
+    if (_changes == null && _watched.isEmpty) return;
+    _watchFolders();
+  }
+
+  /// Works out what a batch of changed paths means for the library, and applies
+  /// it: anything gone is dropped, anything new is filed.
+  ///
+  /// The paths are places to look rather than facts — macOS often names the
+  /// folder something happened in rather than the file — so a folder is read
+  /// again and compared against what the library holds for it.
+  Future<void> _onChanged(Set<String> paths) async {
+    // A scan already in flight will see everything anyway.
+    if (isBusy) return;
+
+    final inScope = paths.where(_isWatched).toList();
+    if (inScope.isEmpty) return;
+
+    final known = {for (final entry in _entries) entry.file.path: entry};
+    final arrived = <String, ScannedFile>{};
+    final gone = <String>{};
+
+    for (final path in inScope) {
+      if (FileSystemScanner.ignores(path, root: _rootFor(path))) continue;
+
+      switch (await FileSystemEntity.type(path)) {
+        case FileSystemEntityType.notFound:
+          gone.add(path);
+
+        case FileSystemEntityType.directory:
+          final found = await const FileSystemScanner().scan(
+            roots: [path],
+            sourceName: _fileSystemName,
+          );
+
+          for (final file in found.files) {
+            if (!known.containsKey(file.path)) arrived[file.path] = file;
+          }
+
+          // What the folder holds now is the whole truth about it — unless the
+          // read stopped early, in which case absence proves nothing.
+          if (found.truncated) continue;
+          final present = {for (final file in found.files) file.path};
+          for (final entry in _entries) {
+            if (entry.file.path.startsWith('$path/') &&
+                !present.contains(entry.file.path)) {
+              gone.add(entry.file.path);
+            }
+          }
+
+        default:
+          if (known.containsKey(path)) continue;
+          arrived[path] = ScannedFile(
+            path: path,
+            sourceName: _fileSystemName,
+            modified: await _modifiedOf(path),
+          );
+      }
+    }
+
+    // Everything under a folder that has gone goes with it.
+    final kept = _entries
+        .where(
+          (entry) => !gone.any(
+            (path) =>
+                entry.file.path == path ||
+                entry.file.path.startsWith('$path/'),
+          ),
+        )
+        .toList();
+
+    final removed = _entries.length - kept.length;
+    final newFiles = arrived.values.toList();
+    if (removed == 0 && newFiles.isEmpty) return;
+
+    if (newFiles.length > _maxAutoFiled) {
+      _warnings = ['${newFiles.length} new files appeared — Rescan to file them'];
+      if (removed > 0) await _commit(kept);
+      notifyListeners();
+      return;
+    }
+
+    if (newFiles.isEmpty) {
+      // Nothing to ask anyone about: what is gone is simply gone.
+      await _commit(kept);
+      return;
+    }
+
+    _filingCount = newFiles.length;
+    _stage = LibraryStage.organizing;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final placed = await _organizer.organize(
+        newFiles,
+        // The library the user already knows is the shape to file into.
+        existingFolders: _foldersInUse(kept),
+      );
+
+      await _commit([
+        ...kept,
+        for (var index = 0; index < newFiles.length; index += 1)
+          LibraryEntry(file: newFiles[index], organizedPath: placed[index]),
+      ]);
+      _stage = LibraryStage.ready;
+    } on OrganizerException catch (failure) {
+      // The removals still stand; only the filing failed.
+      if (removed > 0) await _commit(kept);
+      _error = failure.message;
+      _stage = LibraryStage.failed;
+    } catch (failure) {
+      if (removed > 0) await _commit(kept);
+      _error = 'Filing failed: $failure';
+      _stage = LibraryStage.failed;
+    } finally {
+      _filingCount = 0;
+      notifyListeners();
+    }
+  }
+
+  /// Stores a changed library and puts it on screen.
+  Future<void> _commit(List<LibraryEntry> entries) async {
+    final files = [for (final entry in entries) entry.file];
+    final snapshot = LibrarySnapshot(
+      entries: entries,
+      // Refingerprinted, so the next Rescan compares against what is now true
+      // rather than re-filing everything.
+      fingerprint: _fingerprintOf(files),
+      organizedAt: DateTime.now(),
+    );
+
+    await _store.writeScan(files);
+    await _store.writeLibrary(snapshot);
+    _apply(snapshot);
+    notifyListeners();
+  }
+
+  /// The folders the library is using today, for the model to file into.
+  static Set<String> _foldersInUse(List<LibraryEntry> entries) {
+    final folders = <String>{};
+    for (final entry in entries) {
+      final path = entry.folders;
+      for (var depth = 1; depth <= path.length; depth += 1) {
+        folders.add(path.take(depth).join('/'));
+      }
+    }
+    return folders;
+  }
+
+  bool _isWatched(String path) => _rootFor(path) != null;
+
+  /// The watched folder [path] sits in, if any.
+  String? _rootFor(String path) {
+    for (final root in _watched) {
+      if (path == root || path.startsWith('$root/')) return root;
+    }
+    return null;
+  }
+
+  static Future<DateTime?> _modifiedOf(String path) async {
+    try {
+      return (await File(path).stat()).modified;
+    } on FileSystemException {
+      return null;
+    }
+  }
+
+  static bool _listEquals(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var index = 0; index < a.length; index += 1) {
+      if (a[index] != b[index]) return false;
+    }
+    return true;
   }
 
   /// Reads the stored library, so a returning user sees their files before any
@@ -225,6 +455,7 @@ class LibraryController extends ChangeNotifier {
       _stage = LibraryStage.failed;
     } finally {
       _currentSource = null;
+      _watchFolders();
       notifyListeners();
     }
   }
@@ -302,6 +533,15 @@ class LibraryController extends ChangeNotifier {
     _fingerprint = snapshot.fingerprint;
     _organizedAt = snapshot.organizedAt;
     _tree = LibraryTree.from(_entries);
+    _revision += 1;
+  }
+
+  @override
+  void dispose() {
+    connections.removeListener(_onConnectionsChanged);
+    _changes?.cancel();
+    _watcher.dispose();
+    super.dispose();
   }
 
   /// Identifies a set of files by what they are and when they last changed, so

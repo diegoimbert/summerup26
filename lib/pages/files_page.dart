@@ -345,9 +345,9 @@ class _LibraryView extends StatelessWidget {
   Widget build(BuildContext context) {
     if (library.entries.isNotEmpty) {
       return TreeViewer(
-        // A fresh arrangement is a different tree, not the old one with new
-        // rows, so it starts collapsed again.
-        key: ValueKey(library.organizedAt),
+        // Told about changes rather than rebuilt for them, so a file arriving
+        // on disk does not close everything the user had open.
+        revision: library.revision,
         loadChildren: library.tree.childrenOf,
         emptyMessage: 'Nothing filed here',
       );

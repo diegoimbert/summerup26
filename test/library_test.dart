@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -6,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:overlay_app/library/drive_scanner.dart';
 import 'package:overlay_app/library/file_scanner.dart';
+import 'package:overlay_app/library/file_watcher.dart';
 import 'package:overlay_app/library/library_controller.dart';
 import 'package:overlay_app/library/library_store.dart';
 import 'package:overlay_app/library/library_tree.dart';
@@ -55,15 +57,53 @@ class _FakeOrganizer extends DeepSeekOrganizer {
   final String? failure;
   int calls = 0;
 
+  /// The structure it was last asked to file into.
+  Set<String> knownFolders = const {};
+
   @override
   Future<List<String>> organize(
     List<ScannedFile> files, {
+    Set<String> existingFolders = const {},
     void Function(int organized, int total)? onProgress,
   }) async {
     calls += 1;
+    knownFolders = existingFolders;
     if (failure != null) throw OrganizerException(failure!);
     onProgress?.call(files.length, files.length);
     return [for (final file in files) 'Self/Finance/${file.name}'];
+  }
+}
+
+/// A watcher with no disk behind it: the test says what changed.
+class _FakeWatcher implements SourceWatcher {
+  final StreamController<Set<String>> _changes =
+      StreamController<Set<String>>.broadcast();
+
+  List<String> roots = const [];
+  bool stopped = false;
+
+  @override
+  Stream<Set<String>> watch(List<String> roots) {
+    this.roots = roots;
+    stopped = false;
+    return _changes.stream;
+  }
+
+  /// Reports a batch and waits for it to be dealt with. Working out what a
+  /// change means involves real reads, so this waits on the clock rather than
+  /// on a turn of the event loop.
+  Future<void> report(Set<String> paths) async {
+    _changes.add(paths);
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+  }
+
+  @override
+  Future<void> stop() async => stopped = true;
+
+  @override
+  Future<void> dispose() async {
+    await stop();
+    await _changes.close();
   }
 }
 
@@ -693,6 +733,302 @@ void main() {
         (await tree.childrenOf((await tree.childrenOf(null)).single)).single,
       );
       expect(finance.map((row) => row.id).toSet(), hasLength(2));
+    });
+  });
+
+  group('FileSystemWatcher', () {
+    late Directory folder;
+    late FileSystemWatcher watcher;
+
+    setUp(() async {
+      folder = await Directory.systemTemp.createTemp('kandoo_fsw_');
+      watcher = FileSystemWatcher(settle: const Duration(milliseconds: 60));
+    });
+
+    tearDown(() async {
+      await watcher.dispose();
+      await folder.delete(recursive: true);
+    });
+
+    /// Waits for the folders to be reported as changed, or gives up.
+    Future<Set<String>> awaited(List<Set<String>> batches) async {
+      for (var wait = 0; wait < 100; wait += 1) {
+        if (batches.isNotEmpty) {
+          // Let any straggling events join this batch.
+          await Future<void>.delayed(const Duration(milliseconds: 120));
+          return batches.expand((batch) => batch).toSet();
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      return const {};
+    }
+
+    test('a change under a watched folder is reported', () async {
+      final batches = <Set<String>>[];
+      final subscription = watcher.watch([folder.path]).listen(batches.add);
+      addTearDown(subscription.cancel);
+      // The watch takes a moment to arm.
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+
+      final file = File('${folder.path}/note.md');
+      await file.writeAsString('hello');
+
+      // macOS names the file or the folder it is in, depending on its mood.
+      // Either is enough to know where to look again.
+      final reported = await awaited(batches);
+      expect(reported, isNotEmpty);
+      expect(
+        reported.every(
+          (path) => path == folder.path || path.startsWith('${folder.path}/'),
+        ),
+        isTrue,
+      );
+    });
+
+    test('a burst arrives as one batch, not one each', () async {
+      final batches = <Set<String>>[];
+      final subscription = watcher.watch([folder.path]).listen(batches.add);
+      addTearDown(subscription.cancel);
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+
+      for (var index = 0; index < 5; index += 1) {
+        await File('${folder.path}/file_$index.md').writeAsString('x');
+      }
+
+      expect(await awaited(batches), isNotEmpty);
+      expect(
+        batches.length,
+        lessThan(5),
+        reason: 'five files should not cost five rounds of filing',
+      );
+    });
+
+    test('stopping ends the reports', () async {
+      final batches = <Set<String>>[];
+      final subscription = watcher.watch([folder.path]).listen(batches.add);
+      addTearDown(subscription.cancel);
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+
+      // Anything still in flight from arming the watch is not what is being
+      // tested here.
+      batches.clear();
+
+      await watcher.stop();
+      await File('${folder.path}/after.md').writeAsString('hello');
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+
+      expect(batches, isEmpty);
+    });
+  });
+
+  group('watching for changes', () {
+    late Directory folder;
+    late Directory home;
+    late LibraryStore store;
+
+    setUp(() async {
+      folder = await Directory.systemTemp.createTemp('kandoo_watch_');
+      home = await Directory.systemTemp.createTemp('kandoo_watch_store_');
+      store = LibraryStore(directory: home);
+    });
+
+    tearDown(() async {
+      await folder.delete(recursive: true);
+      await home.delete(recursive: true);
+    });
+
+    /// A library holding [paths], already filed, watching [folder].
+    Future<(LibraryController, _FakeWatcher, _FakeOrganizer)> libraryOf(
+      List<String> paths,
+    ) async {
+      final connections = ConnectionsController(
+        store: _MemoryStore(
+          folders: {
+            'file_system': [folder.path],
+          },
+        ),
+      );
+      await connections.load();
+
+      final watcher = _FakeWatcher();
+      final organizer = _FakeOrganizer();
+      final library = LibraryController(
+        connections: connections,
+        store: store,
+        scanners: _only(_FakeScanner([for (final path in paths) _file(path)])),
+        organizer: organizer,
+        watcher: watcher,
+      );
+      addTearDown(library.dispose);
+
+      await library.start();
+      return (library, watcher, organizer);
+    }
+
+    test('the watch is pointed at the configured folders only', () async {
+      final (library, watcher, _) = await libraryOf(['${folder.path}/a.pdf']);
+
+      expect(watcher.roots, [folder.path]);
+      expect(library.entries, hasLength(1));
+    });
+
+    test(
+      'a file that has gone leaves the library, without a request',
+      () async {
+        final gone = '${folder.path}/gone.pdf';
+        final (library, watcher, organizer) = await libraryOf([
+          gone,
+          '${folder.path}/stays.pdf',
+        ]);
+        final before = organizer.calls;
+        final revision = library.revision;
+
+        await watcher.report({gone});
+
+        expect(library.entries.map((entry) => entry.file.path), [
+          '${folder.path}/stays.pdf',
+        ]);
+        expect(organizer.calls, before, reason: 'nothing to ask about');
+        expect(library.revision, greaterThan(revision));
+        // And the change outlives the app.
+        expect((await store.readLibrary())!.entries, hasLength(1));
+        expect(await store.readScan(), hasLength(1));
+      },
+    );
+
+    test('a folder that has gone takes what was inside it', () async {
+      final (library, watcher, _) = await libraryOf([
+        '${folder.path}/Trip/flight.pdf',
+        '${folder.path}/Trip/hotel.pdf',
+        '${folder.path}/keep.pdf',
+      ]);
+
+      await watcher.report({'${folder.path}/Trip'});
+
+      expect(library.entries.map((entry) => entry.file.path), [
+        '${folder.path}/keep.pdf',
+      ]);
+    });
+
+    test('a folder event is reconciled against what it now holds', () async {
+      final stays = File('${folder.path}/stays.pdf');
+      final leaves = File('${folder.path}/leaves.pdf');
+      await stays.writeAsString('x');
+      await leaves.writeAsString('x');
+
+      final (library, watcher, organizer) = await libraryOf([
+        stays.path,
+        leaves.path,
+      ]);
+      final before = organizer.calls;
+
+      // What macOS actually reports: the folder, not the file.
+      await leaves.delete();
+      final arrival = File('${folder.path}/arrival.pdf');
+      await arrival.writeAsString('x');
+      await watcher.report({folder.path});
+
+      expect(library.entries.map((entry) => entry.file.path), [
+        stays.path,
+        arrival.path,
+      ]);
+      expect(organizer.calls, before + 1, reason: 'one arrival to place');
+    });
+
+    test('a new file is filed into the structure that exists', () async {
+      final (library, watcher, organizer) = await libraryOf([
+        '${folder.path}/old.pdf',
+      ]);
+
+      final arrival = File('${folder.path}/new arrival.pdf');
+      await arrival.writeAsString('hello');
+
+      await watcher.report({arrival.path});
+
+      expect(organizer.calls, 2, reason: 'the scan, then this one file');
+      // Asked to file into the library the user already knows.
+      expect(organizer.knownFolders, contains('Self/Finance'));
+      expect(
+        library.entries.map((entry) => entry.file.path),
+        contains(arrival.path),
+      );
+      expect(library.stage, LibraryStage.ready);
+      expect((await store.readLibrary())!.entries, hasLength(2));
+    });
+
+    test('a file already in the library is left alone', () async {
+      final known = File('${folder.path}/known.pdf');
+      await known.writeAsString('hello');
+      final (library, watcher, organizer) = await libraryOf([known.path]);
+      final before = organizer.calls;
+
+      // A save touches a file that is already filed.
+      await watcher.report({known.path});
+
+      expect(organizer.calls, before);
+      expect(library.entries, hasLength(1));
+    });
+
+    test('changes outside the configured folders are ignored', () async {
+      final outside = File('${home.path}/stranger.pdf');
+      await outside.writeAsString('hello');
+      final (library, watcher, organizer) = await libraryOf([
+        '${folder.path}/a.pdf',
+      ]);
+      final before = organizer.calls;
+
+      await watcher.report({outside.path});
+
+      expect(organizer.calls, before);
+      expect(library.entries, hasLength(1));
+    });
+
+    test('noise is passed over, as it is by the scan', () async {
+      final hidden = File('${folder.path}/.DS_Store');
+      await hidden.writeAsString('junk');
+      final (library, watcher, organizer) = await libraryOf([
+        '${folder.path}/a.pdf',
+      ]);
+      final before = organizer.calls;
+
+      await watcher.report({hidden.path});
+
+      expect(organizer.calls, before);
+      expect(library.entries, hasLength(1));
+    });
+
+    test('a rename is a departure and an arrival', () async {
+      final before = File('${folder.path}/IMG_4021.pdf');
+      await before.writeAsString('hello');
+      final (library, watcher, organizer) = await libraryOf([before.path]);
+
+      final after = File('${folder.path}/Passport scan.pdf');
+      await before.rename(after.path);
+
+      await watcher.report({before.path, after.path});
+
+      expect(library.entries.map((entry) => entry.file.path), [after.path]);
+      expect(organizer.calls, 2);
+    });
+
+    test('a flood waits for a rescan rather than filing itself', () async {
+      final (library, watcher, organizer) = await libraryOf([
+        '${folder.path}/a.pdf',
+      ]);
+      final before = organizer.calls;
+
+      final flood = <String>{};
+      for (var index = 0; index < 120; index += 1) {
+        final file = File('${folder.path}/copy_$index.pdf');
+        await file.writeAsString('x');
+        flood.add(file.path);
+      }
+
+      await watcher.report(flood);
+
+      expect(organizer.calls, before, reason: 'a checkout is not a decision');
+      expect(library.warnings.single, contains('120 new files'));
+      expect(library.entries, hasLength(1));
     });
   });
 

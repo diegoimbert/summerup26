@@ -55,6 +55,14 @@ class SourceDescriptor {
   bool get isAvailable => support != SourceSupport.planned;
 }
 
+/// The source with [id], or null when the catalog has none.
+SourceDescriptor? sourceWithId(String id) {
+  for (final source in kSourceCatalog) {
+    if (source.id == id) return source;
+  }
+  return null;
+}
+
 /// The source called [name], or null when the catalog has none.
 ///
 /// Scans record the source as the user knows it, so this is what turns a stored

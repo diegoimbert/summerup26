@@ -60,8 +60,14 @@ class DeepSeekOrganizer {
   static const String _unsorted = 'Unsorted';
 
   /// A path for every file in [files], in the same order and the same number.
+  ///
+  /// [existingFolders] is the shape the library already has. Pass it when
+  /// filing something into a library that exists — a file that appears while
+  /// Kandoo is running belongs in the folders the user already knows, not in a
+  /// new one that means the same thing.
   Future<List<String>> organize(
     List<ScannedFile> files, {
+    Set<String> existingFolders = const {},
     void Function(int organized, int total)? onProgress,
   }) async {
     if (files.isEmpty) return const [];
@@ -77,9 +83,9 @@ class DeepSeekOrganizer {
     // repaired below, so the result is always the same length as the input.
     final paths = List<String?>.filled(files.length, null);
 
-    /// Categories already in play, so later batches join the hierarchy the
-    /// earlier ones established instead of inventing a parallel one.
-    final known = <String>{};
+    // Categories already in play, so later batches join the hierarchy the
+    // earlier ones established instead of inventing a parallel one.
+    final known = <String>{...existingFolders};
 
     for (var start = 0; start < sent.length; start += batchSize) {
       final end = (start + batchSize).clamp(0, sent.length);

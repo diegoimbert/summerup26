@@ -66,11 +66,19 @@ class TreeViewer extends StatefulWidget {
   const TreeViewer({
     super.key,
     required this.loadChildren,
+    this.revision = 0,
     this.emptyMessage = 'This folder is empty',
     this.padding = const EdgeInsets.symmetric(vertical: 6),
   });
 
   final TreeChildrenLoader loadChildren;
+
+  /// Bumped by the owner when what the loader would answer has changed.
+  ///
+  /// The tree then re-reads the folders it has open, keeping them open. That is
+  /// what lets a file appearing on disk show up where it belongs without
+  /// closing everything the user had unfolded.
+  final int revision;
 
   /// Shown when a folder turns out to hold nothing.
   final String emptyMessage;
@@ -127,6 +135,38 @@ class _TreeViewerState extends State<TreeViewer> with TickerProviderStateMixin {
       branch.dispose();
     }
     super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(TreeViewer old) {
+    super.didUpdateWidget(old);
+    if (widget.revision != old.revision) _reloadOpenFolders();
+  }
+
+  /// Re-reads the top level and every folder the user has open.
+  void _reloadOpenFolders() {
+    _load(null);
+    for (final entry in _openEntries()) {
+      _load(entry);
+    }
+  }
+
+  /// The folders currently open, found by walking what is on screen.
+  List<TreeEntry> _openEntries() {
+    final open = <TreeEntry>[];
+
+    void walk(TreeEntry? parent) {
+      for (final entry in _branches[parent?.id]?.children ?? const []) {
+        if (!entry.isFolder) continue;
+        if (_branches[entry.id]?.open ?? false) {
+          open.add(entry);
+          walk(entry);
+        }
+      }
+    }
+
+    walk(null);
+    return open;
   }
 
   Future<void> _load(TreeEntry? parent) async {

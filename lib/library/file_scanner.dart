@@ -32,6 +32,25 @@ class FileSystemScanner extends SourceScanner {
     'Library',
   };
 
+  /// Whether the scan would pass this path over: hidden, or inside machinery.
+  ///
+  /// [root] is the folder the scan was pointed at. What sits above it is not
+  /// the user's doing — a folder chosen inside `~/.config` is still a folder
+  /// they chose — so only the part below is judged.
+  static bool ignores(String path, {String? root}) {
+    var relative = path;
+    if (root != null && path.startsWith(root)) {
+      relative = path.substring(root.length);
+    }
+
+    for (final segment in relative.split(Platform.pathSeparator)) {
+      if (segment.isEmpty) continue;
+      if (segment.startsWith('.')) return true;
+      if (_skippedFolders.contains(segment)) return true;
+    }
+    return false;
+  }
+
   @override
   Future<ScanResult> scan({
     required List<String> roots,

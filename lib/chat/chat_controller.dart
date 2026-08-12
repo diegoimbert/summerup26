@@ -72,6 +72,10 @@ class ChatController extends ChangeNotifier {
 
   bool _disposed = false;
 
+  /// Which question is being answered, counted up so a turn that has been
+  /// stopped can tell that it is no longer the one being waited on.
+  int _turn = 0;
+
   /// How much of the conversation the assistant is reminded of. Enough for a
   /// follow-up to mean something, short of resending an afternoon's chat with
   /// every question.
@@ -85,10 +89,14 @@ class ChatController extends ChangeNotifier {
     // Everything already said, before this question joins it.
     final history = _history();
 
+    final turn = ++_turn;
     _messages.add(ChatMessage.fromUser(asked));
     _thinking = true;
     _activity = 'Looking through your files…';
     notifyListeners();
+
+    // True once this turn has been stopped, or overtaken by a later question.
+    bool abandoned() => _disposed || _turn != turn;
 
     try {
       final answer = await _agent.ask(
@@ -96,13 +104,14 @@ class ChatController extends ChangeNotifier {
         library: library.entries,
         history: history,
         onStep: (step) {
-          if (_disposed) return;
+          if (abandoned()) return;
           _activity = _wordsFor(step);
           notifyListeners();
         },
+        isCancelled: abandoned,
       );
 
-      if (_disposed) return;
+      if (abandoned()) return;
       _messages.add(
         ChatMessage.fromAssistant(
           answer.text,
@@ -110,17 +119,37 @@ class ChatController extends ChangeNotifier {
           sources: answer.sources,
         ),
       );
+    } on ChatCancelled {
+      // Stopped on purpose. The question stays where it is, unanswered.
+      return;
     } on ChatException catch (failure) {
-      if (!_disposed) _messages.add(ChatMessage.failure(failure.message));
+      if (!abandoned()) _messages.add(ChatMessage.failure(failure.message));
     } catch (failure) {
-      if (!_disposed) {
+      if (!abandoned()) {
         _messages.add(ChatMessage.failure('Something went wrong: $failure'));
       }
     } finally {
-      _thinking = false;
-      _activity = null;
-      if (!_disposed) notifyListeners();
+      // A turn that was stopped, or overtaken, has no say over what the chat is
+      // doing now.
+      if (!abandoned()) {
+        _thinking = false;
+        _activity = null;
+        notifyListeners();
+      }
     }
+  }
+
+  /// Gives up on the question being answered.
+  ///
+  /// The work already at the wire cannot be recalled, so it is orphaned rather
+  /// than waited on: whatever it comes back with is dropped.
+  void stop() {
+    if (!_thinking) return;
+
+    _turn += 1;
+    _thinking = false;
+    _activity = null;
+    notifyListeners();
   }
 
   /// Starts the conversation over.

@@ -59,6 +59,17 @@ class ChatExchange {
   final String answer;
 }
 
+/// Thrown when the caller asks for the answer to be abandoned mid-way.
+///
+/// Not a [ChatException]: nothing went wrong and the user knows what happened,
+/// so there is nothing to tell them.
+class ChatCancelled implements Exception {
+  const ChatCancelled();
+
+  @override
+  String toString() => 'The question was stopped before it was answered.';
+}
+
 /// Thrown when a question cannot be answered at all — no key, no library, or
 /// DeepSeek refusing. The message is written to be shown to the user.
 class ChatException implements Exception {
@@ -124,11 +135,17 @@ class DeepSeekChat {
   /// [history] is what has already been said in this conversation, so a
   /// follow-up can lean on the answer before it. [onStep] is called as the
   /// assistant works, for the line that says what it is doing.
+  ///
+  /// [isCancelled] is asked between steps, and answering true throws
+  /// [ChatCancelled] rather than working on for an answer nobody is waiting
+  /// for. A request already at the wire is seen through — it is the looking
+  /// that takes the time, not the last reply.
   Future<ChatAnswer> ask({
     required String question,
     required List<LibraryEntry> library,
     List<ChatExchange> history = const [],
     void Function(ChatStep step)? onStep,
+    bool Function()? isCancelled,
   }) async {
     if (_apiKey.isEmpty) {
       throw const ChatException(
@@ -174,7 +191,10 @@ class DeepSeekChat {
     }
 
     for (var step = 0; step < maxSteps; step += 1) {
+      if (isCancelled?.call() ?? false) throw const ChatCancelled();
+
       final reply = await _send(messages);
+      if (isCancelled?.call() ?? false) throw const ChatCancelled();
       messages.add({'role': 'assistant', 'content': reply});
 
       final action = _actionIn(reply);
@@ -271,6 +291,8 @@ class DeepSeekChat {
           });
       }
     }
+
+    if (isCancelled?.call() ?? false) throw const ChatCancelled();
 
     // Out of steps. One last ask, so the work already done still produces
     // something rather than nothing.

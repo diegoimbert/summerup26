@@ -76,7 +76,10 @@ class GoogleDriveDocumentReader extends DocumentReader {
         return DocumentText.trimmed(text, maxChars: maxChars);
       }
 
-      if (!TextExtraction.canRead(info.name)) {
+      // What Drive says the file is comes into it as well as what it is called:
+      // a file printed straight into Drive is named for the moment it was made,
+      // with no extension to go by.
+      if (!TextExtraction.canRead(info.name, mimeType: info.mimeType)) {
         throw DocumentUnavailable(
           'Kandoo cannot read ${file.name} — it is not a kind of file it can '
           'turn into text.',
@@ -93,7 +96,7 @@ class GoogleDriveDocumentReader extends DocumentReader {
 
       final bytes = await drive.download(id, maxBytes: maxBytes);
       return DocumentText.trimmed(
-        TextExtraction.of(bytes, name: info.name),
+        TextExtraction.of(bytes, name: info.name, mimeType: info.mimeType),
         maxChars: maxChars,
       );
     } on DriveException catch (failure) {

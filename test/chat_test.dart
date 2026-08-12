@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -107,6 +108,26 @@ class _Script {
 }
 
 String _action(Map<String, dynamic> action) => jsonEncode(action);
+
+/// An agent whose reply arrives only once [held] is completed, so a test can
+/// hold a question mid-answer.
+DeepSeekChat _heldAgent(Completer<String> held) => DeepSeekChat(
+  documents: const DocumentReaders([]),
+  client: MockClient((request) async {
+    return http.Response(
+      jsonEncode({
+        'choices': [
+          {
+            'message': {'content': await held.future},
+          },
+        ],
+      }),
+      200,
+      headers: {'content-type': 'application/json; charset=utf-8'},
+    );
+  }),
+  apiKey: 'test-key',
+);
 
 DeepSeekChat _agent(
   _Script script,
@@ -225,6 +246,120 @@ void main() {
         throwsA(isA<DocumentUnavailable>()),
       );
     });
+
+    test('a PDF in a subset font is read through the font own map', () {
+      // What a modern producer — a browser, Google Docs, Word — writes: the
+      // strings hold glyph numbers, and the /ToUnicode map spells them out.
+      final text = TextExtraction.fromPdf(
+        _pdfInSubsetFont(
+          '<0037> Tj\n'
+          // Moving along the line is how the file spaces its glyphs, not a
+          // break: a word must survive it.
+          '18.40625 0 Td <0044005B00030055> Tj\n'
+          '53.640625 0 Td <0048005700580055005100030015001300150018> Tj',
+          cmap: _timesCmap,
+        ),
+      );
+
+      expect(text, 'Tax return 2025');
+    });
+
+    test('a subset font packed into an object stream is still found', () {
+      final text = TextExtraction.fromPdf(
+        _pdfInSubsetFont(
+          '<00370044005B00030055004800570058005500510003> Tj',
+          cmap: _timesCmap,
+          packed: true,
+        ),
+      );
+
+      expect(text, 'Tax return');
+    });
+
+    test('moving down the page starts a line, moving along it does not', () {
+      final text = TextExtraction.fromPdf(
+        _pdfInSubsetFont(
+          '<00370044005B> Tj\n'
+          '0 -14 Td <00370044005B> Tj',
+          cmap: _timesCmap,
+        ),
+      );
+
+      expect(text, 'Tax\nTax');
+    });
+
+    test('a file with no extension is read by the type it is given', () {
+      const notes = 'Total income: 48,250 EUR, as agreed in March.';
+      final bytes = Uint8List.fromList(utf8.encode(notes));
+
+      expect(
+        TextExtraction.canRead('diego CDI - 3/25/25, 6:58 PM'),
+        isFalse,
+        reason: 'nothing in the name says what it is',
+      );
+      expect(
+        TextExtraction.canRead(
+          'diego CDI - 3/25/25, 6:58 PM',
+          mimeType: 'application/pdf',
+        ),
+        isTrue,
+      );
+      expect(
+        TextExtraction.of(
+          bytes,
+          name: 'notes from March',
+          mimeType: 'text/plain; charset=utf-8',
+        ),
+        notes,
+      );
+    });
+
+    test('what a file is called wins over what it is called by', () {
+      // Drive hands out application/octet-stream freely; a name that says .txt
+      // knows better.
+      const notes = 'Total income: 48,250 EUR, as agreed in March.';
+      expect(
+        TextExtraction.of(
+          Uint8List.fromList(utf8.encode(notes)),
+          name: 'notes.txt',
+          mimeType: 'application/octet-stream',
+        ),
+        notes,
+      );
+    });
+
+    test('words drawn one text object at a time still make one line', () {
+      // How Google's exports draw: a fresh matrix and offset for every word,
+      // each of them dropping to the same baseline. Going by the operators, all
+      // of that reads as line after line; going by where the words land, it is
+      // one line of prose.
+      String word(String glyphs, {double at = 0, double line = -24.98}) =>
+          'BT\n/F1 26 Tf\n1 0 0 -1 0 24 Tm\n$at $line Td <$glyphs> Tj\nET\n';
+
+      final text = TextExtraction.fromPdf(
+        _pdfInSubsetFont(
+          '${word('00370044005B')}'
+          '${word('005500480057005800550051', at: 40)}'
+          // Further down the page, so this one is a line of its own.
+          '${word('00370044005B', line: -60)}',
+          cmap: _timesCmap,
+        ),
+      );
+
+      expect(text, 'Tax return\nTax');
+    });
+
+    test('a subset font that will not say what it draws is refused', () {
+      // Glyph numbers with nothing to read them by. Letting them through would
+      // put an answer's worth of rubble in front of the model.
+      expect(
+        () => TextExtraction.of(
+          _pdfInSubsetFont('<00370044005B> Tj'),
+          name: 'scan.pdf',
+        ),
+        throwsA(isA<DocumentUnavailable>()),
+      );
+    });
   });
 
   group('opening a file', () {
@@ -329,6 +464,40 @@ void main() {
       ).read(_library[2].file, maxChars: 500);
 
       expect(document.text, 'Standup notes for the week.');
+    });
+
+    test('a Drive file with no extension is read by what Drive says it is',
+        () async {
+      // A PDF printed straight into Drive is named for the moment it was made:
+      // slashes in the middle, and nothing on the end to go by.
+      final pdf = _pdfInSubsetFont(
+        '<00370044005B00030055004800570058005500510003> Tj\n'
+        '0 -14 Td <00370044005B00030055004800570058005500510003> Tj',
+        cmap: _timesCmap,
+      );
+
+      final client = MockClient((request) async {
+        if (request.url.queryParameters['alt'] == 'media') {
+          return http.Response.bytes(pdf, 200);
+        }
+        return http.Response(
+          jsonEncode({
+            'id': 'drive-1',
+            'name': 'diego CDI - 3/25/25, 6:58 PM',
+            'mimeType': 'application/pdf',
+            'size': '${pdf.length}',
+          }),
+          200,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      });
+
+      final document = await GoogleDriveDocumentReader(
+        api: () async =>
+            GoogleDriveApi(accessToken: 'token', client: client),
+      ).read(_library[2].file, maxChars: 500);
+
+      expect(document.text, 'Tax return\nTax return');
     });
 
     test('a Drive that is no longer connected says so', () {
@@ -655,6 +824,70 @@ void main() {
       expect(find.text('listed  Self/Finance'), findsOneWidget);
     });
 
+    testWidgets('the send button becomes a stop button while it works', (
+      tester,
+    ) async {
+      // The answer is held at the wire, so the question stays mid-flight for as
+      // long as the test needs it to.
+      final held = Completer<String>();
+      final chat = await _pumpChat(tester, _heldAgent(held));
+      addTearDown(chat.dispose);
+
+      await tester.enterText(find.byType(TextField), 'What did I earn?');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.arrow_upward));
+      // Twice: once for the swap, once for the icon it replaced to be let go.
+      await tester.pump(const Duration(milliseconds: 200));
+      await tester.pump(const Duration(milliseconds: 200));
+
+      expect(find.byIcon(Icons.stop_rounded), findsOneWidget);
+      expect(find.byIcon(Icons.arrow_upward), findsNothing);
+
+      await tester.tap(find.byIcon(Icons.stop_rounded));
+      // Twice: once for the swap, once for the icon it replaced to be let go.
+      await tester.pump(const Duration(milliseconds: 200));
+      await tester.pump(const Duration(milliseconds: 200));
+
+      expect(chat.isThinking, isFalse);
+      expect(find.byIcon(Icons.arrow_upward), findsOneWidget);
+      expect(find.byIcon(Icons.stop_rounded), findsNothing);
+
+      // The answer that turns up afterwards is nobody's, and is dropped rather
+      // than landing in a conversation that has moved on.
+      held.complete(_action({'action': 'answer', 'text': 'You earned 48,250.'}));
+      await tester.pumpAndSettle();
+
+      expect(find.text('You earned 48,250.'), findsNothing);
+      expect(chat.messages.single.isFromUser, isTrue);
+    });
+
+    testWidgets('a question asked after stopping is answered as usual', (
+      tester,
+    ) async {
+      final held = Completer<String>();
+      final chat = await _pumpChat(tester, _heldAgent(held));
+      addTearDown(chat.dispose);
+
+      await tester.enterText(find.byType(TextField), 'What did I earn?');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.arrow_upward));
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.stop_rounded));
+      await tester.pump();
+
+      await tester.enterText(find.byType(TextField), 'And in 2024?');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.arrow_upward));
+      await tester.pump();
+
+      held.complete(_action({'action': 'answer', 'text': 'In 2024, 41,000.'}));
+      await tester.pumpAndSettle();
+
+      // The abandoned question keeps its place; only the second gets an answer.
+      expect(find.text('In 2024, 41,000.'), findsOneWidget);
+      expect(chat.messages.length, 3);
+    });
+
     testWidgets('a suggestion asks its question', (tester) async {
       final script = _Script([
         _action({'action': 'answer', 'text': 'You earned 48,250 EUR in 2025.'}),
@@ -760,6 +993,95 @@ Future<ChatController> _pumpChat(
   await tester.pumpAndSettle();
 
   return chat;
+}
+
+/// The glyph numbers a Times subset uses, and the characters they stand for —
+/// taken from a PDF printed by Chrome, which is the same engine Google Docs
+/// exports with.
+const String _timesCmap = '''
+/CIDInit /ProcSet findresource begin
+begincmap
+/CMapName /Adobe-Identity-UCS def
+1 begincodespacerange
+<0000> <FFFF>
+endcodespacerange
+10 beginbfchar
+<0003> <0020>
+<0013> <0030>
+<0015> <0032>
+<0018> <0035>
+<0037> <0054>
+<0044> <0061>
+<0048> <0065>
+<0051> <006E>
+<0055> <0072>
+<005B> <0078>
+endbfchar
+1 beginbfrange
+<0057> <0058> <0074>
+endbfrange
+endcmap
+''';
+
+/// A PDF that draws [shows] in a subset font, the way a producer that embeds
+/// its fonts writes one: the strings hold glyph numbers, and [cmap] — when the
+/// font carries one — says what those glyphs spell.
+///
+/// [packed] puts the page and the font inside an object stream, as a PDF 1.5
+/// file does with everything that is not a stream itself.
+Uint8List _pdfInSubsetFont(String shows, {String? cmap, bool packed = false}) {
+  // A [shows] that opens text objects of its own is drawn as it is written;
+  // anything else is wrapped in one.
+  final content = shows.contains('BT')
+      ? shows
+      : 'BT\n/F1 12 Tf\n1 0 0 -1 8 37 Tm\n$shows\nET\n';
+
+  const page =
+      '<</Type /Page\n'
+      '/Resources <</Font <</F1 2 0 R>>>>\n'
+      '/Contents 3 0 R>>';
+  final font =
+      '<</Type /Font\n'
+      '/Subtype /Type0\n'
+      '/BaseFont /AAAAAA+Times-Roman\n'
+      '/Encoding /Identity-H\n'
+      '${cmap == null ? '' : '/ToUnicode 4 0 R\n'}'
+      '/DescendantFonts [7 0 R]>>';
+
+  final out = StringBuffer('%PDF-1.5\n');
+
+  if (packed) {
+    // `number offset` for each object, then the objects themselves.
+    final header = '1 0 2 ${page.length + 1} ';
+    final packedBytes = ZLibEncoder().convert(
+      latin1.encode('$header$page\n$font\n'),
+    );
+
+    out.write(
+      '6 0 obj\n'
+      '<</Type /ObjStm\n/N 2\n/First ${header.length}\n'
+      '/Filter /FlateDecode\n/Length ${packedBytes.length}>>\n'
+      'stream\n${String.fromCharCodes(packedBytes)}\nendstream\nendobj\n',
+    );
+  } else {
+    out.write('1 0 obj\n$page\nendobj\n');
+    out.write('2 0 obj\n$font\nendobj\n');
+  }
+
+  out.write(
+    '3 0 obj\n<< /Length ${content.length} >>\n'
+    'stream\n$content\nendstream\nendobj\n',
+  );
+
+  if (cmap != null) {
+    out.write(
+      '4 0 obj\n<< /Length ${cmap.length} >>\n'
+      'stream\n$cmap\nendstream\nendobj\n',
+    );
+  }
+
+  out.write('trailer\n<< /Root 5 0 R >>\n%%EOF\n');
+  return Uint8List.fromList(latin1.encode(out.toString()));
 }
 
 /// A PDF with one uncompressed content stream drawing [operators].

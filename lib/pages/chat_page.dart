@@ -124,8 +124,9 @@ class _ChatPageState extends State<ChatPage> {
               _Composer(
                 controller: _question,
                 focusNode: _composer,
-                enabled: !_chat.isThinking,
+                running: _chat.isThinking,
                 onSend: _send,
+                onStop: _chat.stop,
               ),
             ],
           ),
@@ -591,14 +592,20 @@ class _Composer extends StatefulWidget {
   const _Composer({
     required this.controller,
     required this.focusNode,
-    required this.enabled,
+    required this.running,
     required this.onSend,
+    required this.onStop,
   });
 
   final TextEditingController controller;
   final FocusNode focusNode;
-  final bool enabled;
+
+  /// Whether an answer is on its way, which is what turns the send button into
+  /// a stop button.
+  final bool running;
+
   final VoidCallback onSend;
+  final VoidCallback onStop;
 
   @override
   State<_Composer> createState() => _ComposerState();
@@ -638,7 +645,7 @@ class _ComposerState extends State<_Composer> {
   @override
   Widget build(BuildContext context) {
     final hasText = widget.controller.text.trim().isNotEmpty;
-    final canSend = hasText && widget.enabled;
+    final canSend = hasText && !widget.running;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(32, 0, 32, 24),
@@ -685,7 +692,11 @@ class _ComposerState extends State<_Composer> {
               ),
             ),
             const SizedBox(width: 6),
-            _SendButton(enabled: canSend, onTap: widget.onSend),
+            _SendButton(
+              enabled: canSend,
+              running: widget.running,
+              onTap: widget.running ? widget.onStop : widget.onSend,
+            ),
           ],
         ),
       ),
@@ -693,31 +704,52 @@ class _ComposerState extends State<_Composer> {
   }
 }
 
+/// Sends the question, or calls off the one being answered.
+///
+/// The same button does both: while the assistant is working there is nothing
+/// to send, and stopping is the only thing left to want.
 class _SendButton extends StatelessWidget {
-  const _SendButton({required this.enabled, required this.onTap});
+  const _SendButton({
+    required this.enabled,
+    required this.running,
+    required this.onTap,
+  });
 
   final bool enabled;
+
+  /// Whether the assistant is working, and so whether this stops rather than
+  /// sends.
+  final bool running;
+
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
+    final live = running || enabled;
+
     return MouseRegion(
-      cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
+      cursor: live ? SystemMouseCursors.click : SystemMouseCursors.basic,
       child: GestureDetector(
-        onTap: enabled ? onTap : null,
+        onTap: live ? onTap : null,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 140),
           margin: const EdgeInsets.only(bottom: 3),
           width: 32,
           height: 32,
           decoration: BoxDecoration(
-            color: enabled ? KandooColors.accent : KandooColors.hoverFill,
+            color: live ? KandooColors.accent : KandooColors.hoverFill,
             borderRadius: BorderRadius.circular(9),
           ),
-          child: Icon(
-            Icons.arrow_upward,
-            size: 17,
-            color: enabled ? Colors.white : KandooColors.textMuted,
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 140),
+            child: Icon(
+              running ? Icons.stop_rounded : Icons.arrow_upward,
+              // Keyed so the switcher sees a change of icon rather than the
+              // same widget with a different glyph.
+              key: ValueKey(running),
+              size: running ? 19 : 17,
+              color: live ? Colors.white : KandooColors.textMuted,
+            ),
           ),
         ),
       ),

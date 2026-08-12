@@ -358,14 +358,21 @@ class _EventRowState extends State<_EventRow> {
                 ),
               ),
               if (modified != null)
+                // Kept in the layout but out of sight until the row is under
+                // the pointer, as in the file tree: the date is worth having to
+                // hand, not worth reading down a whole column of.
                 Padding(
                   padding: const EdgeInsets.only(left: 12),
-                  child: Text(
-                    _isoDate(modified),
-                    style: const TextStyle(
-                      fontFamily: KandooFonts.mono,
-                      fontSize: 11,
-                      color: KandooColors.textMuted,
+                  child: AnimatedOpacity(
+                    opacity: _hovered ? 1 : 0,
+                    duration: const Duration(milliseconds: 120),
+                    child: Text(
+                      _isoDate(modified),
+                      style: const TextStyle(
+                        fontFamily: KandooFonts.mono,
+                        fontSize: 11,
+                        color: KandooColors.textMuted,
+                      ),
                     ),
                   ),
                 ),
